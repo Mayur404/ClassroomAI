@@ -1,106 +1,88 @@
-# AI Classroom
+# 🎓 AI Classroom Tutor
 
-AI Classroom is a local-demo classroom management system inspired by Google Classroom, with AI-assisted syllabus parsing, class planning, assignment generation, grading, and student Q&A.
+A complete, production-ready AI tutoring system that allows students to upload their coursework (PDFs) and interact with an AI Teacher. This project uses a hybrid architecture: **Local RAG (Retrieval-Augmented Generation)** for vector search to eliminate token-heavy document parsing, and the **Gemini API** for high-quality, conversational answers and assignment generation.
 
-This repository is organized as a monorepo with:
+![AI Classroom Screenshot](https://raw.githubusercontent.com/mayur/ai-classroom/main/docs/screenshot.png) *(Place your screenshot here)*
 
-- `ai-classroom-backend/` for the Django REST API
-- `ai-classroom-frontend/` for the React app
-- `docs/` for architecture, delivery plan, and AI design notes
+## ✨ Features
 
-## Product Goals
+- **📄 Local PDF Parsing:** Extracts and chunks PDF text entirely locally using `pdfplumber`. No expensive API calls for reading documents.
+- **🧠 Local Vector Search (RAG):** Uses `ChromaDB` and `sentence-transformers` (`all-MiniLM-L6-v2`) to embed chunks and perform vector similarity search on your machine.
+- **💬 Conversational AI Teacher:** Powered by `gemini-2.5-flash`, the AI tutor answers questions strictly using your uploaded syllabus/materials. Output is beautifully formatted with `react-markdown`.
+- **🗺️ Auto-Learning Paths:** Automatically extracts topics from your PDF and generates a class-by-class schedule.
+- **📝 Interactive Assignments:** Generates custom MCQ and Essay assignments based on your materials. Includes inline AI grading with personalized feedback.
+- **🎨 Premium UI:** A stunning, modern dark theme with glassmorphism effects, micro-animations, and a fully responsive tabbed interface.
+- **🛡️ Zero-Setup Robustness:** Auto-creates demo users and courses natively—just spin it up and it instantly works without manual database population.
 
-- Single-course demo for one teacher and multiple students
-- Google OAuth restricted to `@iiitdwd.ac.in`
-- Local-first AI using Ollama
-- Reliable JSON-based AI workflows for planning, assignments, grading, and chat
-- Clean Google Classroom-like teacher and student experience
+---
 
-## Recommended Scope
+## 🏗️ Architecture
 
-This is the right MVP scope for a solo 2-4 week build:
+1. **Frontend:** React + Vite + Tailwind/CSS Modules (`@tanstack/react-query`, `react-router-dom`, `react-markdown`)
+2. **Backend:** Django Rest Framework
+3. **Database:** SQLite (default) + ChromaDB (Local Vector Store)
+4. **AI Models:**
+   - Embeddings: `all-MiniLM-L6-v2` (Local)
+   - Generation: `gemini-2.5-flash` (Google API)
 
-- 1 teacher demo account flow
-- 1 course with syllabus upload
-- Auto-generated class schedule
-- Assignment generation limited by syllabus metadata and completed classes
-- Submission flow for students
-- AI grading for essay/coding, deterministic grading for MCQ
-- Course-aware Q&A chatbot with guardrails
+---
 
-## Repo Layout
+## 🚀 Quick Start
 
-```text
-.
-|-- README.md
-|-- docs/
-|   |-- ai-strategy.md
-|   |-- architecture.md
-|   `-- implementation-plan.md
-|-- ai-classroom-backend/
-|   |-- README.md
-|   `-- requirements.txt
-`-- ai-classroom-frontend/
-    |-- README.md
-    `-- package.json
-```
+### 1. Backend Setup
 
-## What To Build First
-
-1. Backend models, serializers, and REST APIs
-2. Syllabus upload and parsing pipeline
-3. Schedule generation with teacher approval
-4. Assignment creation constraints and publishing flow
-5. Submission + grading pipeline
-6. Student chat with syllabus/schedule context
-7. Frontend polish for the demo script
-
-## Best Model Recommendation
-
-Your original `qwen2.5:4b` pick is okay for a low-resource laptop demo, but it is not the best default if you want higher-quality grading and syllabus understanding.
-
-- Best balanced local default: `qwen2.5:7b-instruct`
-- Best stronger local option if hardware allows: `qwen2.5:14b-instruct`
-- Best coding-specific secondary model: `qwen2.5-coder:7b`
-- Fast fallback for weaker machines: `qwen2.5:4b`
-
-More detailed model guidance is in [docs/ai-strategy.md](/C:/Users/mayur/Desktop/LLMZK/docs/ai-strategy.md).
-
-## Local Setup
-
-### Backend
+Navigate to the backend directory and set up your Python environment:
 
 ```bash
 cd ai-classroom-backend
 python -m venv venv
-venv\Scripts\activate
+
+# On Windows:
+.\venv\Scripts\activate
+# On Mac/Linux:
+source venv/bin/activate
+
+# Install dependencies (includes Django, ChromaDB, sentence-transformers)
 pip install -r requirements.txt
+```
+
+Create a `.env` file in the `ai-classroom-backend` directory and add your Gemini API Key:
+```ini
+GEMINI_API_KEY=your_api_key_here
+GEMINI_MODEL_PRIMARY=gemini-2.5-flash
+GEMINI_MODEL_CODER=gemini-2.5-flash
+```
+
+Run the backend server (this will auto-create the database and demo course):
+```bash
 python manage.py makemigrations
 python manage.py migrate
 python manage.py runserver
 ```
 
-### Frontend
+### 2. Frontend Setup
+
+Open a new terminal and navigate to the frontend directory:
 
 ```bash
 cd ai-classroom-frontend
 npm install
+
+# Start the Vite development server
 npm run dev
 ```
 
-### Ollama
+The application will be running at `http://localhost:5173`.
 
-```bash
-ollama pull qwen2.5:7b-instruct
-ollama pull qwen2.5-coder:7b
-```
+---
 
-## Current State
+## 🧑‍🎓 Usage Guide
 
-The repository now includes:
+1. **Login:** Enter any name and email address. The demo does not require passwords.
+2. **Upload Materials:** Go to the "Materials" tab and upload a PDF. You will see ChromeDB extract the topics instantly.
+3. **Chat:** Ask the AI Teacher a question in the right-hand Chat sidebar. It will perform a local vector search in ChromaDB and answer based on your PDF!
+4. **Assignments:** Navigate to the "Assignments" tab to generate and take interactive quizzes graded by the AI.
 
-- Django project scaffold with domain apps and API endpoints
-- React frontend scaffold with login, dashboard, and course pages
-- AI service abstraction for syllabus parsing, schedule generation, assignment generation, grading, and chat
+## 🤝 Contributing
 
-The AI service is currently a local scaffold layer with deterministic fallback behavior. Replace those functions with validated Ollama JSON calls to move from demo scaffold to full AI execution.
+Feel free to fork this project, submit pull requests, or open issues. It's designed to be a starting point for more complex EdTech applications!

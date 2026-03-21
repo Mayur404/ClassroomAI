@@ -118,9 +118,11 @@ Return JSON with:
 - description (string)
 - type: "{assignment_type}"
 - total_marks (int)
-- questions: list of question objects
-  - MCQ: {{ "question_number": int, "prompt": str, "options": [str], "marks": int }}
-  - ESSAY: {{ "question_number": int, "prompt": str, "marks": int, "constraints": [str] }}
+- questions: list of question objects containing:
+  - question_number: int
+  - prompt: string
+  - options: list of strings (populate ONLY if it's an MCQ)
+  - marks: int
 - rubric: list of {{ "question_number": int, "criteria": [str] }}
 - answer_key: for MCQ, {{ "question_number": "correct_option_text" }}"""
 
@@ -193,31 +195,26 @@ def answer_course_question(course, question: str) -> dict:
     1. Search ChromaDB for relevant chunks (LOCAL)
     2. Send only those chunks + question to Gemini
     """
-    # Step 1: Local vector search
     relevant_chunks = search_course(course.id, question, top_k=5)
+    context_str = "\n---\n".join(relevant_chunks) if relevant_chunks else "No course materials uploaded yet."
 
-    if not relevant_chunks:
-        return {
-            "answer": "I don't have any study materials to reference yet. Please upload a PDF first!",
-            "sources": [],
-        }
-
-    # Step 2: Build context from retrieved chunks
-    context = "\n---\n".join(relevant_chunks)
-
-    # Step 3: Send minimal prompt to Gemini
     model_id = get_model_name()
-    prompt = f"""You are an AI tutor for "{course.name}".
-Answer the student's question using ONLY the following retrieved context from their study materials.
-If the answer isn't in the context, say you don't have enough information.
+    prompt = f"""You are an energetic, supportive AI tutor for the course "{course.name}".
+Your goal is to help the student learn. 
+
+If they say hello or general greetings, enthusiastically greet them back and ask how you can help them with "{course.name}".
+If they ask a specific question, answer it USING ONLY the provided "RETRIEVED CONTEXT".
+If the "RETRIEVED CONTEXT" says "No course materials uploaded yet", politely tell them to upload their syllabus or study materials in the 'Materials' tab so you can help them.
+If the answer is truly not in the context, tell them you don't have enough information from the uploaded materials.
+
+Format your response beautifully using Markdown (bolding, lists, code blocks if needed).
 
 RETRIEVED CONTEXT:
-{context}
+{context_str}
 
 STUDENT QUESTION:
 {question}
-
-Give a clear, helpful, and educational answer."""
+"""
 
     try:
         response = client.models.generate_content(
@@ -231,6 +228,7 @@ Give a clear, helpful, and educational answer."""
     except Exception as e:
         logger.error(f"Gemini Q&A failed: {e}")
         return {
-            "answer": "I'm having trouble connecting to the AI. Please try again in a moment.",
+            "answer": "I'm having trouble connecting to my AI brain. Please try again in a moment.",
             "sources": [],
         }
+

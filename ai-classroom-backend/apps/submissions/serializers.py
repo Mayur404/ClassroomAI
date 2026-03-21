@@ -20,6 +20,7 @@ class SubmissionSerializer(serializers.ModelSerializer):
             "graded_at",
         )
         read_only_fields = (
+            "assignment",
             "student",
             "status",
             "submitted_at",

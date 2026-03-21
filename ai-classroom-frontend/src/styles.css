@@ -479,6 +479,48 @@ input::placeholder {
   color: var(--text-muted);
 }
 
+/* ─── Markdown Content ────────────────────────── */
+.markdown-body {
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+.markdown-body p { margin-bottom: 0.75rem; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body strong { font-weight: 600; color: #fff; }
+.markdown-body ul, .markdown-body ol { margin-left: 1.5rem; margin-bottom: 0.75rem; }
+.markdown-body li { margin-bottom: 0.25rem; }
+.markdown-body code {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.85em;
+}
+.markdown-body pre {
+  background: rgba(0, 0, 0, 0.4);
+  padding: 1rem;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}
+.markdown-body pre code { background: none; padding: 0; }
+
+/* ─── Clear Chat Button ───────────────────────── */
+.btn-clear {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.25rem;
+  font-size: 1rem;
+  transition: opacity var(--transition);
+  opacity: 0.5;
+}
+.btn-clear:hover {
+  opacity: 1;
+}
+
+
 /* ─── Assignments ─────────────────────────────── */
 .assignment-actions {
   display: flex;
@@ -550,6 +592,47 @@ input::placeholder {
   margin-top: 0.75rem;
   padding-top: 0.5rem;
   border-top: 1px solid var(--border);
+}
+
+.assignment-footer .btn-primary {
+  margin-left: auto;
+}
+
+/* ─── Assignment Options & Results ──────────────── */
+.option-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  margin-bottom: 0.5rem;
+}
+
+.option-label:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.option-label input[type="radio"] {
+  accent-color: var(--primary);
+  width: 1.1rem;
+  height: 1.1rem;
+  cursor: pointer;
+}
+
+.grading-result {
+  margin-top: 1.5rem;
+  background: rgba(16, 185, 129, 0.1) !important;
+  border-color: rgba(16, 185, 129, 0.2) !important;
+}
+
+.grading-score {
+  font-size: 1.25rem;
+  color: var(--success, #10b981);
+  margin-bottom: 0.5rem;
 }
 
 /* ─── Chat Interface ──────────────────────────── */

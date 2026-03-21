@@ -8,6 +8,8 @@ import FileUpload from "../components/FileUpload";
 export default function CoursePage() {
   const courseId = 1; // Single classroom for the demo
   const [activeTab, setActiveTab] = useState("materials");
+  const [answers, setAnswers] = useState({});
+  const [results, setResults] = useState({});
 
   const courseQuery = useQuery({
     queryKey: ["course", courseId],
@@ -39,6 +41,28 @@ export default function CoursePage() {
     },
     onSuccess: () => assignmentsQuery.refetch(),
   });
+
+  const submitAssignment = useMutation({
+    mutationFn: async ({ assignmentId, answersPayload }) => {
+      const res = await client.post(`/assignments/${assignmentId}/submissions/`, {
+        answers: answersPayload,
+      });
+      return { assignmentId, data: res.data };
+    },
+    onSuccess: (res) => {
+      setResults((prev) => ({ ...prev, [res.assignmentId]: res.data }));
+    },
+  });
+
+  const handleAnswerChange = (assignmentId, questionNumber, value) => {
+    setAnswers((prev) => ({
+      ...prev,
+      [assignmentId]: {
+        ...(prev[assignmentId] || {}),
+        [questionNumber]: value,
+      },
+    }));
+  };
 
   const syncCourse = () => courseQuery.refetch();
 
@@ -218,39 +242,82 @@ export default function CoursePage() {
             )}
 
             <div className="assignments-list stack compact">
-              {(assignmentsQuery.data || []).map((a) => (
-                <div key={a.id} className="assignment-card panel">
-                  <div className="assignment-header">
-                    <span className="assignment-type">{a.type}</span>
-                    <strong>{a.title}</strong>
-                  </div>
-                  <p className="text-muted">{a.description}</p>
-                  {a.questions && a.questions.length > 0 && (
-                    <div className="questions-list">
-                      {a.questions.map((q, qi) => (
-                        <div key={qi} className="question-item">
-                          <p>
-                            <strong>Q{q.question_number}:</strong> {q.prompt}
-                          </p>
-                          {q.options && (
-                            <ul className="options-list">
-                              {q.options.map((opt, oi) => (
-                                <li key={oi}>{opt}</li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      ))}
+              {(assignmentsQuery.data || []).map((a) => {
+                const isSubmitted = !!results[a.id];
+                const resultData = results[a.id];
+                
+                return (
+                  <div key={a.id} className="assignment-card panel">
+                    <div className="assignment-header">
+                      <span className="assignment-type">{a.type}</span>
+                      <strong>{a.title}</strong>
                     </div>
-                  )}
-                  <div className="assignment-footer">
-                    <span className="chip">{a.total_marks} marks</span>
-                    {a.due_date && (
-                      <span className="text-muted">Due: {a.due_date}</span>
+                    <p className="text-muted">{a.description}</p>
+                    {a.questions && a.questions.length > 0 && (
+                      <div className="questions-list">
+                        {a.questions.map((q, qi) => (
+                          <div key={qi} className="question-item">
+                            <p>
+                              <strong>Q{q.question_number}:</strong> {q.prompt}
+                            </p>
+                            {q.options && q.options.length > 0 ? (
+                              <div className="options-list">
+                                {q.options.map((opt, oi) => (
+                                  <label key={oi} className="option-label">
+                                    <input
+                                      type="radio"
+                                      name={`q_${a.id}_${q.question_number}`}
+                                      value={opt}
+                                      checked={answers[a.id]?.[q.question_number] === opt}
+                                      onChange={() =>
+                                        handleAnswerChange(a.id, q.question_number, opt)
+                                      }
+                                      disabled={isSubmitted || submitAssignment.isPending}
+                                    />
+                                    {opt}
+                                  </label>
+                                ))}
+                              </div>
+                            ) : (
+                              <textarea
+                                className="input-field"
+                                rows="3"
+                                placeholder="Type your answer here..."
+                                value={answers[a.id]?.[q.question_number] || ""}
+                                onChange={(e) =>
+                                  handleAnswerChange(a.id, q.question_number, e.target.value)
+                                }
+                                disabled={isSubmitted || submitAssignment.isPending}
+                              />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    
+                    {isSubmitted ? (
+                      <div className="grading-result panel compact">
+                        <h4>Grading Results</h4>
+                        <div className="grading-score">
+                          Score: <strong>{resultData.ai_grade}</strong> / {a.total_marks}
+                        </div>
+                        <p className="text-muted">{resultData.ai_feedback?.overall_feedback}</p>
+                      </div>
+                    ) : (
+                      <div className="assignment-footer">
+                        <span className="chip">{a.total_marks} marks</span>
+                        <button 
+                          className="btn-primary" 
+                          onClick={() => submitAssignment.mutate({ assignmentId: a.id, answersPayload: answers[a.id] || {} })}
+                          disabled={submitAssignment.isPending}
+                        >
+                          {submitAssignment.isPending && submitAssignment.variables?.assignmentId === a.id ? "Submitting..." : "Submit Answers"}
+                        </button>
+                      </div>
                     )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
               {(!assignmentsQuery.data ||
                 assignmentsQuery.data.length === 0) && (
                 <p className="empty-state">
