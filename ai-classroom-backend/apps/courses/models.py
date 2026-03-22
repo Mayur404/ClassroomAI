@@ -43,6 +43,26 @@ class Course(models.Model):
         return self.name
 
 
+def material_upload_path(instance, filename):
+    return f"materials/course_{instance.course_id}/{filename}"
+
+
+class CourseMaterial(models.Model):
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="materials")
+    title = models.CharField(max_length=255, default="Uploaded Material")
+    file = models.FileField(upload_to=material_upload_path, blank=True, null=True)
+    content_text = models.TextField(blank=True)
+    extracted_topics = models.JSONField(default=list, blank=True)
+    parse_status = models.CharField(max_length=20, choices=ParseStatus.choices, default=ParseStatus.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self) -> str:
+        return f"{self.title} ({self.course.name})"
+
+
 class Enrollment(models.Model):
     student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="enrollments")
     course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="enrollments")

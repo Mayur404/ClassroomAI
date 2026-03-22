@@ -35,7 +35,6 @@ def _get_collection(course_id: int):
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
     """Split text into overlapping chunks for embedding."""
-    # Clean up the text
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r" {2,}", " ", text)
 
@@ -60,40 +59,33 @@ def extract_topics_from_chunks(chunks: list[str]) -> list[str]:
     """Extract topic summaries from chunks (first meaningful line of each chunk)."""
     topics = []
     seen = set()
-    for chunk in chunks[:15]:  # Look at first 15 chunks
-        # Take the first sentence or line as a topic hint
+    for chunk in chunks[:15]:
         lines = chunk.split("\n")
         for line in lines:
             line = line.strip()
             if len(line) > 10 and line.lower() not in seen:
                 seen.add(line.lower())
-                topics.append(line[:80])  # Cap at 80 chars
+                topics.append(line[:80])
                 break
-    return topics[:10]  # Return max 10 topics
+    return topics[:10]
 
 
-def index_course_materials(course_id: int, text: str) -> dict:
-    """Chunk text, embed it, and store in ChromaDB. Returns indexing stats."""
+def index_course_materials(course_id: int, material_id: int, text: str) -> dict:
+    """Chunk text, embed it, and store in ChromaDB tagged by material_id."""
     collection = _get_collection(course_id)
 
-    # Clear old data for this course
+    # Delete existing chunks for THIS specific material
     try:
-        existing = collection.count()
-        if existing > 0:
-            all_ids = collection.get()["ids"]
-            if all_ids:
-                collection.delete(ids=all_ids)
+        collection.delete(where={"material_id": material_id})
     except Exception:
         pass
 
-    # Chunk the document
     chunks = chunk_text(text)
     if not chunks:
         return {"status": "FAILED", "error": "No content to index."}
 
-    # Store chunks with IDs
-    ids = [f"chunk_{course_id}_{i}" for i in range(len(chunks))]
-    metadatas = [{"course_id": course_id, "chunk_index": i} for i in range(len(chunks))]
+    ids = [f"material_{material_id}_chunk_{i}" for i in range(len(chunks))]
+    metadatas = [{"course_id": course_id, "material_id": material_id, "chunk_index": i} for i in range(len(chunks))]
 
     collection.add(
         documents=chunks,
@@ -102,8 +94,7 @@ def index_course_materials(course_id: int, text: str) -> dict:
     )
 
     topics = extract_topics_from_chunks(chunks)
-
-    logger.info(f"Indexed {len(chunks)} chunks for course {course_id}")
+    logger.info(f"Indexed {len(chunks)} chunks for course {course_id}, material {material_id}")
 
     return {
         "status": "SUCCESS",
@@ -125,3 +116,13 @@ def search_course(course_id: int, query: str, top_k: int = 5) -> list[str]:
     )
 
     return results["documents"][0] if results["documents"] else []
+
+
+def delete_material_chunks(course_id: int, material_id: int):
+    """Delete all vector chunks associated with a specific material."""
+    collection = _get_collection(course_id)
+    try:
+        collection.delete(where={"material_id": material_id})
+        logger.info(f"Deleted vector chunks for material {material_id} in course {course_id}")
+    except Exception as e:
+        logger.error(f"Failed to delete material chunks: {e}")

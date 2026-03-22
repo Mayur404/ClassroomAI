@@ -1,12 +1,15 @@
 import { useState, useMemo } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useParams, useNavigate } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import client from "../api/client";
 import ChatInterface from "../components/ChatInterface";
 import FileUpload from "../components/FileUpload";
 
 export default function CoursePage() {
-  const courseId = 1; // Single classroom for the demo
+  const { courseId } = useParams();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("materials");
   const [answers, setAnswers] = useState({});
   const [results, setResults] = useState({});
@@ -18,6 +21,7 @@ export default function CoursePage() {
       return res.data;
     },
     retry: false,
+    enabled: !!courseId,
   });
 
   const assignmentsQuery = useQuery({
@@ -26,6 +30,7 @@ export default function CoursePage() {
       const res = await client.get(`/courses/${courseId}/assignments/`);
       return res.data;
     },
+    enabled: !!courseId,
   });
 
   const generateAssignment = useMutation({
@@ -42,6 +47,16 @@ export default function CoursePage() {
     onSuccess: () => assignmentsQuery.refetch(),
   });
 
+  const deleteCourse = useMutation({
+    mutationFn: async () => {
+      await client.delete(`/courses/${courseId}/`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries(["courses"]);
+      navigate("/");
+    },
+  });
+
   const submitAssignment = useMutation({
     mutationFn: async ({ assignmentId, answersPayload }) => {
       const res = await client.post(`/assignments/${assignmentId}/submissions/`, {
@@ -51,6 +66,16 @@ export default function CoursePage() {
     },
     onSuccess: (res) => {
       setResults((prev) => ({ ...prev, [res.assignmentId]: res.data }));
+    },
+  });
+
+  const deleteMaterial = useMutation({
+    mutationFn: async (materialId) => {
+      await client.delete(`/materials/${materialId}/delete/`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries(["course", courseId]);
+      queryClient.invalidateQueries(["courses"]); // Update completed class counts in sidebar
     },
   });
 
@@ -64,9 +89,11 @@ export default function CoursePage() {
     }));
   };
 
-  const syncCourse = () => courseQuery.refetch();
+  const syncCourse = () => {
+    queryClient.invalidateQueries(["course", courseId]);
+  };
 
-  const hasMaterials = courseQuery.data?.syllabus_parse_status === "SUCCESS";
+  const hasMaterials = courseQuery.data?.materials?.length > 0;
 
   const completedCount = useMemo(
     () =>
@@ -75,6 +102,7 @@ export default function CoursePage() {
     [courseQuery.data]
   );
 
+  if (!courseId) return <div className="loading-screen">Select a classroom from the sidebar.</div>;
   if (courseQuery.isLoading)
     return <div className="loading-screen">Loading your classroom...</div>;
 
@@ -83,12 +111,26 @@ export default function CoursePage() {
       {/* Left: Course content */}
       <div className="classroom-main stack">
         {/* Header */}
-        <section className="panel hero compact">
-          <p className="eyebrow">My Classroom</p>
-          <h2>{courseQuery.data?.name || "AI Learning Space"}</h2>
-          {courseQuery.data?.description && (
-            <p className="text-muted">{courseQuery.data.description}</p>
-          )}
+        <section className="panel hero compact" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <p className="eyebrow">My Classroom</p>
+            <h2>{courseQuery.data?.name || "AI Learning Space"}</h2>
+            {courseQuery.data?.description && (
+              <p className="text-muted">{courseQuery.data.description}</p>
+            )}
+          </div>
+          <button 
+            className="btn-secondary text-danger" 
+            style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+            disabled={deleteCourse.isPending}
+            onClick={() => {
+              if (window.confirm("Are you sure you want to delete this entire classroom? This action cannot be undone.")) {
+                deleteCourse.mutate();
+              }
+            }}
+          >
+            {deleteCourse.isPending ? "Deleting..." : "Delete Classroom"}
+          </button>
         </section>
 
         {/* Tab Navigation */}
@@ -118,32 +160,51 @@ export default function CoursePage() {
           <section className="panel stack compact">
             <div className="section-header">
               <h3>Study Materials</h3>
-              {courseQuery.data?.syllabus_parse_status && (
-                <span
-                  className={`chip status-${courseQuery.data.syllabus_parse_status.toLowerCase()}`}
-                >
-                  {courseQuery.data.syllabus_parse_status}
-                </span>
-              )}
+              <span className="chip">
+                {courseQuery.data?.materials?.length || 0} files
+              </span>
             </div>
-            <p className="text-muted">
-              Upload a PDF (syllabus, textbook chapter, notes). The AI will
-              analyze it and build your learning path.
-            </p>
-            <FileUpload courseId={courseId} onUploadSuccess={syncCourse} />
-
+            
             {hasMaterials && (
-              <div className="material-summary">
-                <h4>Extracted Topics</h4>
-                <div className="topic-tags">
-                  {courseQuery.data.extracted_topics?.map((t, i) => (
-                    <span key={i} className="topic-tag">
-                      {t}
-                    </span>
-                  ))}
-                </div>
+              <div className="material-list stack compact">
+                {courseQuery.data.materials.map((mat) => (
+                  <div key={mat.id} className="material-card">
+                    <div className="material-info">
+                      <strong>{mat.title}</strong>
+                      <span className={`chip status-${mat.parse_status?.toLowerCase() || 'pending'}`}>
+                        {mat.parse_status || 'Parsed'}
+                      </span>
+                    </div>
+                    {mat.extracted_topics?.length > 0 && (
+                      <p className="text-muted text-small truncate">
+                        Topics: {mat.extracted_topics.slice(0, 3).join(", ")}
+                        {mat.extracted_topics.length > 3 ? "..." : ""}
+                      </p>
+                    )}
+                    <button 
+                      className="btn-icon text-danger"
+                      onClick={() => {
+                        if (confirm(`Remove "${mat.title}"? This will rebuild the schedule and clear its chat context.`)) {
+                          deleteMaterial.mutate(mat.id);
+                        }
+                      }}
+                      disabled={deleteMaterial.isPending && deleteMaterial.variables === mat.id}
+                      title="Delete Material"
+                    >
+                      {deleteMaterial.isPending && deleteMaterial.variables === mat.id ? "..." : "🗑️"}
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
+
+            <div className="upload-container">
+              <h4>Add New Material</h4>
+              <p className="text-muted text-small">
+                Upload PDFs or paste text. The AI will analyze them and update your learning path.
+              </p>
+              <FileUpload courseId={courseId} onUploadSuccess={syncCourse} />
+            </div>
           </section>
         )}
 

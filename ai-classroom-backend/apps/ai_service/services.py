@@ -1,23 +1,38 @@
 """
-AI Services — Uses local RAG for context, Gemini only for generation.
+AI Services — Uses local RAG for context and local Ollama for generation.
 """
 import json
 import logging
 import pdfplumber
-from django.conf import settings
-from google import genai
+import requests
 
 from .rag_service import chunk_text, extract_topics_from_chunks, index_course_materials, search_course
 
 logger = logging.getLogger(__name__)
 
-# Initialize Gemini Client
-client = genai.Client(api_key=settings.GEMINI_API_KEY)
+OLLAMA_API_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3.2"
 
+def call_ollama(prompt: str, format_json: bool = False) -> str:
+    """Helper to query the local Ollama daemon."""
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.2
+        }
+    }
+    if format_json:
+        payload["format"] = "json"
 
-def get_model_name(is_coder=False):
-    return settings.GEMINI_MODEL_CODER if is_coder else settings.GEMINI_MODEL_PRIMARY
-
+    try:
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=120)
+        response.raise_for_status()
+        return response.json().get("response", "")
+    except Exception as e:
+        logger.error(f"Ollama generation failed: {e}")
+        raise
 
 def extract_text_from_pdf(pdf_file) -> str:
     """Extracts text from a PDF file using pdfplumber (fully local)."""
@@ -27,7 +42,7 @@ def extract_text_from_pdf(pdf_file) -> str:
             for page in pdf.pages:
                 extracted = page.extract_text()
                 if extracted:
-                    text += extracted + "\n"
+                    text += str(extracted) + "\n"
     except Exception as e:
         logger.error(f"Error extracting PDF text: {e}")
     return text
@@ -35,8 +50,8 @@ def extract_text_from_pdf(pdf_file) -> str:
 
 def parse_syllabus_content(syllabus_text: str, course_id: int = 1) -> dict:
     """
-    FULLY LOCAL parsing — no Gemini call.
-    Chunks the text, stores in ChromaDB, extracts topics from content.
+    FULLY LOCAL parsing — no AI call initially beyond RAG indexing.
+    Chunks the text, stores in ChromaDB.
     """
     try:
         # Index the content in ChromaDB
@@ -46,8 +61,7 @@ def parse_syllabus_content(syllabus_text: str, course_id: int = 1) -> dict:
             return {"status": "FAILED", "error": result.get("error", "Indexing failed")}
 
         topics = result["topics"]
-        chunks = chunk_text(syllabus_text)
-
+        
         return {
             "syllabus_text": syllabus_text,
             "status": "SUCCESS",
@@ -67,9 +81,22 @@ def parse_syllabus_content(syllabus_text: str, course_id: int = 1) -> dict:
 
 
 def generate_schedule_from_course(course) -> list[dict]:
-    """Generates a class schedule using Gemini with minimal context (just topics)."""
-    model_id = get_model_name()
-    topics_list = ", ".join(course.extracted_topics or ["General course content"])
+    """Generates a class schedule using local Ollama model."""
+    
+    # Aggregate topics from ALL materials
+    all_topics = []
+    seen = set()
+    for material in course.materials.all():
+        for topic in (material.extracted_topics or []):
+            if topic.lower() not in seen:
+                seen.add(topic.lower())
+                all_topics.append(topic)
+    
+    # Fallback to course-level topics if no materials
+    if not all_topics:
+        all_topics = course.extracted_topics or ["General course content"]
+
+    topics_list = ", ".join(all_topics)
 
     prompt = f"""Create a class-by-class learning schedule for a course named "{course.name}".
 Main Topics: {topics_list}
@@ -84,14 +111,23 @@ Return a JSON array where each object has:
 Provide 5-10 classes to cover all topics."""
 
     try:
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
-        )
-        return json.loads(response.text)
+        response_text = call_ollama(prompt, format_json=True)
+        parsed = json.loads(response_text)
+        
+        # Models sometimes wrap arrays in a dictionary (e.g., {"schedule": [...]})
+        if isinstance(parsed, dict):
+            for value in parsed.values():
+                if isinstance(value, list):
+                    return value
+            return [parsed]  # Fallback if no list inside
+        
+        if isinstance(parsed, list):
+            return parsed
+            
+        raise ValueError("Ollama returned an unexpected JSON structure.")
+        
     except Exception as e:
-        logger.error(f"Gemini schedule generation failed: {e}")
+        logger.error(f"Ollama schedule generation failed: {e}")
         return [
             {
                 "class_number": i + 1,
@@ -100,13 +136,12 @@ Provide 5-10 classes to cover all topics."""
                 "learning_objectives": [f"Understand {topic}"],
                 "duration_minutes": 60,
             }
-            for i, topic in enumerate(course.extracted_topics or ["Introduction"])
+            for i, topic in enumerate(all_topics)
         ]
 
 
 def generate_assignment_for_course(course, assignment_type: str, title: str, covered_topics: list[str]) -> dict:
-    """Generates an assignment using Gemini with topic context only."""
-    model_id = get_model_name()
+    """Generates an assignment using local Ollama."""
     topics_str = ", ".join(covered_topics)
 
     prompt = f"""Generate a {assignment_type} assignment for "{course.name}".
@@ -127,17 +162,16 @@ Return JSON with:
 - answer_key: for MCQ, {{ "question_number": "correct_option_text" }}"""
 
     try:
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
-        )
-        return json.loads(response.text)
+        response_text = call_ollama(prompt, format_json=True)
+        parsed = json.loads(response_text)
+        if isinstance(parsed, list) and len(parsed) > 0:
+            return parsed[0]
+        return parsed
     except Exception as e:
-        logger.error(f"Gemini assignment generation failed: {e}")
+        logger.error(f"Ollama assignment generation failed: {e}")
         return {
             "title": title,
-            "description": "Error generating AI content.",
+            "description": "Error generating AI content offline.",
             "type": assignment_type,
             "total_marks": 0,
             "questions": [],
@@ -147,7 +181,7 @@ Return JSON with:
 
 
 def grade_submission(assignment, answers: dict) -> dict:
-    """Grades submissions — MCQ locally, open-ended via Gemini."""
+    """Grades submissions — MCQ locally, open-ended via Ollama."""
     if assignment.type == "MCQ":
         score_breakdown = []
         total = 0
@@ -169,7 +203,6 @@ def grade_submission(assignment, answers: dict) -> dict:
             "overall_feedback": "MCQ automated grading finished.",
         }
 
-    model_id = get_model_name()
     prompt = f"""Grade this assignment submission.
 Title: {assignment.title}
 Rubric: {json.dumps(assignment.rubric)}
@@ -179,13 +212,13 @@ Answers: {json.dumps(answers)}
 Return JSON: {{ "total_score": float, "score_breakdown": [...], "overall_feedback": str }}"""
 
     try:
-        response = client.models.generate_content(
-            model=model_id, contents=prompt,
-            config={"response_mime_type": "application/json"},
-        )
-        return json.loads(response.text)
+        response_text = call_ollama(prompt, format_json=True)
+        parsed = json.loads(response_text)
+        if isinstance(parsed, list) and len(parsed) > 0:
+            return parsed[0]
+        return parsed
     except Exception as e:
-        logger.error(f"Gemini grading failed: {e}")
+        logger.error(f"Ollama grading failed: {e}")
         return {"total_score": 0, "overall_feedback": "Grading error: " + str(e)}
 
 
@@ -193,12 +226,11 @@ def answer_course_question(course, question: str) -> dict:
     """
     RAG pipeline:
     1. Search ChromaDB for relevant chunks (LOCAL)
-    2. Send only those chunks + question to Gemini
+    2. Send only those chunks + question to Ollama
     """
     relevant_chunks = search_course(course.id, question, top_k=5)
     context_str = "\n---\n".join(relevant_chunks) if relevant_chunks else "No course materials uploaded yet."
 
-    model_id = get_model_name()
     prompt = f"""You are an energetic, supportive AI tutor for the course "{course.name}".
 Your goal is to help the student learn. 
 
@@ -217,18 +249,15 @@ STUDENT QUESTION:
 """
 
     try:
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt,
-        )
+        response_text = call_ollama(prompt, format_json=False)
         return {
-            "answer": response.text,
+            "answer": response_text,
             "sources": [{"type": "rag_search", "num_chunks": len(relevant_chunks)}],
         }
     except Exception as e:
-        logger.error(f"Gemini Q&A failed: {e}")
+        logger.error(f"Ollama Q&A failed: {e}")
         return {
-            "answer": "I'm having trouble connecting to my AI brain. Please try again in a moment.",
+            "answer": "I'm having trouble connecting to my local Ollama daemon. Make sure Ollama is running!",
             "sources": [],
         }
 

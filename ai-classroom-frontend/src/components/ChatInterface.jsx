@@ -15,6 +15,28 @@ export default function ChatInterface({ courseId }) {
     }
   }, [messages, isTyping]);
 
+  useEffect(() => {
+    const saved = localStorage.getItem(`chat_history_${courseId}`);
+    if (saved) {
+      try {
+        setMessages(JSON.parse(saved));
+      } catch (e) {
+        setMessages([]);
+      }
+    } else {
+      setMessages([]);
+    }
+    setInput("");
+  }, [courseId]);
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      localStorage.setItem(`chat_history_${courseId}`, JSON.stringify(messages));
+    } else {
+      localStorage.removeItem(`chat_history_${courseId}`);
+    }
+  }, [messages, courseId]);
+
   const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim()) return;
