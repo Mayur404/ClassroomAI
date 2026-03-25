@@ -39,6 +39,12 @@ class Course(models.Model):
     schedule_approved_at = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['teacher']),
+            models.Index(fields=['status']),
+        ]
+
     def __str__(self) -> str:
         return self.name
 
@@ -58,6 +64,9 @@ class CourseMaterial(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=['course', '-created_at']),
+        ]
 
     def __str__(self) -> str:
         return f"{self.title} ({self.course.name})"

@@ -18,7 +18,10 @@ from pydantic import ValidationError
 from rapidocr_onnxruntime import RapidOCR
 
 from .rag_service import index_course_materials, search_course
+from .enhanced_rag import intelligent_search, get_ranked_results, index_material_with_structure
+from .answer_generator import AnswerFormatter, classify_and_preprocess
 from .schemas import AssignmentResponse, GradingResponse, ScheduleResponse
+from .premium_answer_engine import premium_engine, batch_optimizer, perf_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -1779,9 +1782,66 @@ def _format_pdf_grounded_answer(question: str, evidence: list[dict]) -> str:
     return f"{heading}\n\n{quotes}"
 
 
-def answer_course_question(course, question: str) -> dict:
-    """Use local retrieval and answer with Ollama or a contextual fallback."""
-    relevant_chunks = search_course(course.id, question, top_k=6)
+def answer_course_question(course, question: str, user=None, include_context: bool = True) -> dict:
+    """Improved question answering with conversation context and intelligent search."""
+    
+    # Preprocess and classify the question
+    prep_info = classify_and_preprocess(question)
+    
+    # Build conversation context if this is a follow-up question
+    context_messages = []
+    if include_context and user:
+        from apps.chat.models import ChatMessage
+        recent_messages = ChatMessage.objects.filter(
+            course=course, student=user
+        ).order_by('-timestamp')[:6]  # Last 5 messages before current
+        
+        context_messages = list(reversed(recent_messages))
+        
+        # Limit context to last ~500 tokens
+        context_str = "\n".join([
+            f"Q: {m.message}" if m.role == "STUDENT" else f"A: {m.ai_response[:200]}"
+            for m in context_messages
+        ])
+    else:
+        context_str = ""
+    
+    # Try intelligent search first (detects heading queries, etc.)
+    search_results = intelligent_search(course.id, question, top_k=8)
+    
+    # Check if we found exact section matches
+    sections_matched = search_results.get("sections_matched", [])
+    relevant_chunks = search_results.get("standard_results", [])
+    
+    # If we have a direct section match for a heading query, use it
+    if sections_matched and search_results.get("is_heading_query"):
+        section = sections_matched[0]
+        formatter = AnswerFormatter()
+        
+        answer_dict = formatter.format_section_answer(
+            question=question,
+            section_content=section.get("content_preview", ""),
+            section_heading=section.get("heading", ""),
+            full_path=section.get("full_path", [])
+        )
+        
+        return {
+            "answer": answer_dict["answer"],
+            "sources": [
+                {
+                    "type": "section_direct",
+                    "section_heading": answer_dict["section_heading"],
+                    "hierarchy": answer_dict["hierarchy"],
+                    "material_id": section.get("material_id"),
+                }
+            ],
+        }
+    
+    # Fall back to evidence-based answer
+    if not relevant_chunks:
+        relevant_chunks = search_course(course.id, question, top_k=6)
+    
+    # Extract and score evidence
     evidence = _extract_chat_evidence(question, relevant_chunks, limit=3)
     context_str = "\n---\n".join(relevant_chunks) if relevant_chunks else "No course materials uploaded yet."
     evidence_str = "\n".join(
@@ -1789,6 +1849,7 @@ def answer_course_question(course, question: str) -> dict:
         for index, item in enumerate(evidence, start=1)
     ) or "None"
 
+    # For factual questions with good evidence, use direct grounding
     if _looks_like_fact_lookup(question) and evidence and evidence[0]["score"] >= 0.55:
         return {
             "answer": _format_pdf_grounded_answer(question, evidence),
@@ -1796,7 +1857,7 @@ def answer_course_question(course, question: str) -> dict:
                 {"type": "rag_search", "num_chunks": len(relevant_chunks)},
                 *[
                     {
-                        "type": "pdf_evidence",
+                        "type": "references",
                         "snippet": item["text"],
                         "score": item["score"],
                         "chunk_index": item["chunk_index"],
@@ -1806,17 +1867,36 @@ def answer_course_question(course, question: str) -> dict:
             ],
         }
 
+    # Use optimized prompt based on question type with conversation context
+    question_type = prep_info.get("question_type", "general")
+    answer_length = prep_info.get("estimated_answer_length", 250)
+    
+    # Enhanced prompt with context
+    conversation_context_section = ""
+    if context_messages:
+        conversation_context_section = f"""
+CONVERSATION HISTORY (for context):
+{chr(10).join([f"- {m.message if m.role == 'STUDENT' else m.ai_response[:150]}" for m in context_messages[:3]])}
+
+Remember the previous discussion when answering this follow-up question.
+"""
+    
     prompt = f"""You are a retrieval-only AI tutor for the course "{course.name}".
 Your job is to answer using only the uploaded PDF evidence below.
+Answer type: {question_type.upper()}
+Expected length: {answer_length} characters.
 
-Rules:
-- Use only the EVIDENCE QUOTES and RETRIEVED CONTEXT.
-- Stay as close as possible to the wording in the PDF.
-- Do not add outside knowledge, extra examples, analogies, or generic textbook explanation.
-- If the answer is not explicitly supported by the evidence, say exactly: I couldn't find that exact information in the uploaded PDF.
-- Keep the answer concise.
-- If useful, include up to two short blockquotes copied from the evidence.
-- If the student greets you, greet them briefly and ask what they want to find in the PDF.
+{conversation_context_section}
+
+CRITICAL RULES:
+1. Answer ONLY from the provided EVIDENCE and CONTEXT.
+2. Never add outside knowledge or generic explanations.
+3. Stay as close as possible to the PDF wording.
+4. If you can find an exact match or section reference, mention it.
+5. If the answer isn't in the materials, say: "I couldn't find that exact information in the course materials."
+6. Be concise but complete for the question type.
+7. For section/heading queries, mention where in the course it's found.
+8. Remember and reference previous parts of the conversation if this is a follow-up.
 
 EVIDENCE QUOTES:
 {evidence_str}
@@ -1826,7 +1906,8 @@ RETRIEVED CONTEXT:
 
 STUDENT QUESTION:
 {question}
-"""
+
+ANSWER:"""
 
     try:
         response_text = call_ollama(
@@ -1842,7 +1923,7 @@ STUDENT QUESTION:
                 {"type": "rag_search", "num_chunks": len(relevant_chunks)},
                 *[
                     {
-                        "type": "pdf_evidence",
+                        "type": "references",
                         "snippet": item["text"],
                         "score": item["score"],
                         "chunk_index": item["chunk_index"],
@@ -1859,7 +1940,7 @@ STUDENT QUESTION:
                 {"type": "rag_search", "num_chunks": len(relevant_chunks)},
                 *[
                     {
-                        "type": "pdf_evidence",
+                        "type": "references",
                         "snippet": item["text"],
                         "score": item["score"],
                         "chunk_index": item["chunk_index"],
@@ -1868,3 +1949,103 @@ STUDENT QUESTION:
                 ],
             ],
         }
+
+
+# ============ PREMIUM ANSWER GENERATION (NEW) ============
+
+
+def answer_course_question_premium(
+    course,
+    question: str,
+    user=None,
+    include_context: bool = True,
+    use_cache: bool = True,
+) -> dict:
+    """
+    Premium answer generation with all enhancements:
+    - Better PDF extraction (scanned + native)
+    - Perfect source attribution
+    - Reliable prompting (non-random answers)
+    - Better semantic search
+    - Response validation
+    
+    This is the recommended function for new code.
+    Falls back to answer_course_question if issues occur.
+    """
+    
+    try:
+        # Check cache
+        if use_cache and batch_optimizer.should_use_cached_answer(question, course.id):
+            cached = batch_optimizer.get_cached_answer(question, course.id)
+            if cached:
+                logger.info("Using cached answer")
+                return cached
+        
+        # Build conversation history if needed
+        conversation_history = None
+        if include_context and user:
+            from apps.chat.models import ChatMessage
+            recent_messages = ChatMessage.objects.filter(
+                course=course, student=user
+            ).order_by('-timestamp')[:6]
+            
+            conversation_history = []
+            for msg in reversed(recent_messages):
+                if msg.role == "STUDENT":
+                    conversation_history.append(msg.message[:100])
+                else:
+                    conversation_history.append(msg.ai_response[:150])
+        
+        # Create search function wrapper
+        def search_wrapper(query, top_k=10):
+            """Wrapper around search_course function."""
+            try:
+                results = search_course(course.id, query, top_k=top_k)
+                # Convert to (text, score) tuples
+                return [(r, 0.8) for r in results] if results else []
+            except Exception as e:
+                logger.error(f"Search failed: {e}")
+                return []
+        
+        # Create LLM function wrapper
+        def llm_wrapper(prompt):
+            """Wrapper around Ollama."""
+            try:
+                return call_ollama(
+                    prompt,
+                    format_json=False,
+                    model=OLLAMA_MODEL,
+                    temperature=0.05,
+                    num_predict=OLLAMA_CHAT_NUM_PREDICT,
+                )
+            except Exception as e:
+                logger.error(f"LLM generation failed: {e}")
+                return None
+        
+        # Generate premium answer
+        response = premium_engine.answer_question_premium(
+            question=question,
+            course=course,
+            user=user,
+            search_func=search_wrapper,
+            llm_func=llm_wrapper,
+            conversation_history=conversation_history,
+        )
+        
+        # Cache answer
+        batch_optimizer.cache_answer(question, course.id, response)
+        
+        # Log metrics
+        perf_monitor.log_answer(
+            processing_time_ms=response["metadata"]["processing_time_ms"],
+            confidence=response["confidence"],
+            evidence_count=response["metadata"]["evidence_count"],
+            is_cached=False,
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Premium answer generation failed: {e}. Falling back to standard.")
+        # Fallback to original function
+        return answer_course_question(course, question, user, include_context)

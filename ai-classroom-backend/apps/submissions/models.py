@@ -25,3 +25,7 @@ class Submission(models.Model):
     class Meta:
         ordering = ("-submitted_at",)
         unique_together = ("assignment", "student")
+        indexes = [
+            models.Index(fields=['assignment', '-submitted_at']),
+            models.Index(fields=['student', '-submitted_at']),
+        ]

@@ -18,6 +18,15 @@ class ChatMessage(models.Model):
     ai_response = models.TextField(blank=True)
     sources = models.JSONField(default=list, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
+    
+    # Feedback tracking for answer quality improvement
+    feedback_score = models.IntegerField(null=True, blank=True)  # -1=unhelpful, 1=helpful
+    feedback_text = models.TextField(blank=True)  # Why was it good/bad?
+    feedback_timestamp = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ("timestamp",)
+        indexes = [
+            models.Index(fields=['course', 'student', '-timestamp']),
+            models.Index(fields=['course', '-timestamp']),
+        ]

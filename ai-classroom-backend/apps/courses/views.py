@@ -15,6 +15,7 @@ from apps.ai_service.services import (
     summarize_course_materials,
 )
 from apps.ai_service.rag_service import delete_material_chunks, index_course_materials
+from apps.ai_service.enhanced_rag import index_material_with_structure
 from apps.assignments.models import Assignment
 from apps.submissions.models import Submission
 
@@ -216,17 +217,23 @@ class SyllabusUploadView(APIView):
             logger.info("Starting indexing for material=%s", material.id)
             indexing_started_at = time.perf_counter()
             index_result = index_course_materials(course.id, material.id, raw_text)
+            
+            # Also build document structure for enhanced heading-based queries
+            structure_result = index_material_with_structure(course.id, material.id, raw_text)
+            index_result["document_structure"] = structure_result
+            
             if extraction_metadata:
                 index_result["extraction"] = extraction_metadata
             material.extracted_topics = index_result.get("topics", [])
             material.parse_status = ParseStatus.SUCCESS if index_result["status"] == "SUCCESS" else ParseStatus.FAILED
             material.save(update_fields=["content_text", "extracted_topics", "parse_status"])
             logger.info(
-                "Indexing completed for material=%s status=%s chunks=%s topics=%s duration=%.2fs",
+                "Indexing completed for material=%s status=%s chunks=%s topics=%s sections=%s duration=%.2fs",
                 material.id,
                 index_result.get("status"),
                 index_result.get("num_chunks"),
                 len(material.extracted_topics),
+                structure_result.get("sections_found", 0),
                 time.perf_counter() - indexing_started_at,
             )
 

@@ -5,7 +5,7 @@ import client from "../api/client";
 
 function evidenceSnippets(sources) {
   return (sources || [])
-    .filter((item) => item?.type === "pdf_evidence" && item?.snippet)
+    .filter((item) => item?.type === "references" && item?.snippet)
     .slice(0, 2);
 }
 
