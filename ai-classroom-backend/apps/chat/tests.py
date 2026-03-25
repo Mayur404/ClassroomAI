@@ -1,0 +1,57 @@
+from unittest import mock
+
+from django.urls import reverse
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APITestCase
+
+from apps.courses.models import Course, CourseMaterial
+from apps.users.models import User, UserRole
+
+
+class ChatFallbackTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="chat@example.com",
+            password="testpass123",
+            name="Chat User",
+            role=UserRole.STUDENT,
+        )
+        token = Token.objects.create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.course = Course.objects.create(teacher=self.user, name="Algorithms")
+        CourseMaterial.objects.create(
+            course=self.course,
+            title="Recursion Notes",
+            content_text="Recursion solves a problem by reducing it to smaller versions of the same problem.",
+            extracted_topics=["Recursion"],
+            parse_status="SUCCESS",
+        )
+
+    @mock.patch("apps.ai_service.services.call_ollama", side_effect=RuntimeError("offline"))
+    def test_chat_stays_grounded_in_pdf_when_llm_is_unavailable(self, _mock_call_ollama):
+        response = self.client.post(
+            reverse("chat-ask", args=[self.course.id]),
+            {"message": "What is recursion?"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("your pdf", response.data["ai_response"].lower())
+        self.assertIn("Recursion solves a problem", response.data["ai_response"])
+        self.assertGreaterEqual(len(response.data["sources"]), 1)
+
+    @mock.patch("apps.ai_service.services.call_ollama")
+    def test_chat_returns_exact_pdf_wording_for_fact_lookup(self, mock_call_ollama):
+        response = self.client.post(
+            reverse("chat-ask", args=[self.course.id]),
+            {"message": "What is recursion?"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("exact answer text", response.data["ai_response"].lower())
+        self.assertIn(
+            "Recursion solves a problem by reducing it to smaller versions of the same problem.",
+            response.data["ai_response"],
+        )
+        mock_call_ollama.assert_not_called()

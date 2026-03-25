@@ -33,6 +33,9 @@ class CourseSerializer(serializers.ModelSerializer):
     teacher_name = serializers.CharField(source="teacher.name", read_only=True)
     assignment_count = serializers.SerializerMethodField()
     completed_class_count = serializers.SerializerMethodField()
+    schedule_progress_percent = serializers.SerializerMethodField()
+    next_class_topic = serializers.SerializerMethodField()
+    material_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -56,6 +59,9 @@ class CourseSerializer(serializers.ModelSerializer):
             "created_at",
             "assignment_count",
             "completed_class_count",
+            "schedule_progress_percent",
+            "next_class_topic",
+            "material_count",
             "schedule_items",
         )
         read_only_fields = (
@@ -69,13 +75,60 @@ class CourseSerializer(serializers.ModelSerializer):
             "created_at",
             "assignment_count",
             "completed_class_count",
+            "schedule_progress_percent",
+            "next_class_topic",
+            "material_count",
         )
 
+    @staticmethod
+    def _prefetched_list(obj, relation_name):
+        cache = getattr(obj, "_prefetched_objects_cache", {})
+        if relation_name in cache:
+            return list(cache[relation_name])
+        return None
+
     def get_assignment_count(self, obj):
+        if hasattr(obj, "assignment_count_value"):
+            return obj.assignment_count_value
         return obj.assignments.count()
 
     def get_completed_class_count(self, obj):
+        schedule_items = self._prefetched_list(obj, "schedule_items")
+        if schedule_items is not None:
+            return sum(1 for item in schedule_items if item.status == ScheduleStatus.COMPLETED)
         return obj.schedule_items.filter(status=ScheduleStatus.COMPLETED).count()
+
+    def get_schedule_progress_percent(self, obj):
+        schedule_items = self._prefetched_list(obj, "schedule_items")
+        if schedule_items is not None:
+            total = len(schedule_items)
+            if total == 0:
+                return 0
+            completed = sum(1 for item in schedule_items if item.status == ScheduleStatus.COMPLETED)
+            return round((completed / total) * 100)
+
+        total = obj.schedule_items.count()
+        if total == 0:
+            return 0
+        completed = obj.schedule_items.filter(status=ScheduleStatus.COMPLETED).count()
+        return round((completed / total) * 100)
+
+    def get_next_class_topic(self, obj):
+        schedule_items = self._prefetched_list(obj, "schedule_items")
+        if schedule_items is not None:
+            remaining = sorted(
+                (item for item in schedule_items if item.status != ScheduleStatus.COMPLETED),
+                key=lambda item: (item.class_number, item.order_index),
+            )
+            return remaining[0].topic if remaining else None
+        next_item = obj.schedule_items.exclude(status=ScheduleStatus.COMPLETED).order_by("class_number").first()
+        return next_item.topic if next_item else None
+
+    def get_material_count(self, obj):
+        materials = self._prefetched_list(obj, "materials")
+        if materials is not None:
+            return len(materials)
+        return obj.materials.count()
 
 
 class EnrollmentSerializer(serializers.ModelSerializer):
@@ -93,6 +146,15 @@ class SyllabusUploadSerializer(serializers.Serializer):
     syllabus_text = serializers.CharField(required=False, allow_blank=False)
 
     def validate(self, attrs):
-        if not attrs.get("syllabus_pdf") and not attrs.get("syllabus_text"):
+        syllabus_pdf = attrs.get("syllabus_pdf")
+        syllabus_text = attrs.get("syllabus_text")
+
+        if syllabus_pdf and syllabus_text:
+            raise serializers.ValidationError("Provide either syllabus_pdf or syllabus_text, not both.")
+
+        if not syllabus_pdf and not syllabus_text:
             raise serializers.ValidationError("Provide either syllabus_pdf or syllabus_text.")
+
+        if syllabus_text and len(syllabus_text.strip()) < 40:
+            raise serializers.ValidationError("Provide a bit more text so the material can be analyzed properly.")
         return attrs

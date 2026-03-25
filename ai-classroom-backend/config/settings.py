@@ -100,9 +100,44 @@ REST_FRAMEWORK = {
 }
 
 INSTITUTE_EMAIL_DOMAIN = os.getenv("INSTITUTE_EMAIL_DOMAIN", "iiitdwd.ac.in")
-OLLAMA_MODEL_PRIMARY = os.getenv("OLLAMA_MODEL_PRIMARY", "qwen2.5:7b-instruct")
+OLLAMA_MODEL_PRIMARY = os.getenv("OLLAMA_MODEL_PRIMARY", "qwen2.5:7b")
 OLLAMA_MODEL_CODER = os.getenv("OLLAMA_MODEL_CODER", "qwen2.5-coder:7b")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "")
+OLLAMA_EMBED_KEEP_ALIVE = os.getenv("OLLAMA_EMBED_KEEP_ALIVE", "30m")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL_PRIMARY = os.getenv("GEMINI_MODEL_PRIMARY", "gemini-2.5-flash")
 GEMINI_MODEL_CODER = os.getenv("GEMINI_MODEL_CODER", "gemini-2.5-pro")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+        },
+    },
+    "loggers": {
+        "apps": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "apps.ai_service": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "apps.courses": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}

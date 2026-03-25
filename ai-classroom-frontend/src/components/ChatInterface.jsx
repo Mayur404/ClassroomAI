@@ -3,6 +3,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import client from "../api/client";
 
+function evidenceSnippets(sources) {
+  return (sources || [])
+    .filter((item) => item?.type === "pdf_evidence" && item?.snippet)
+    .slice(0, 2);
+}
+
 export default function ChatInterface({ courseId }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -103,6 +109,14 @@ export default function ChatInterface({ courseId }) {
             {msg.sources && msg.sources.length > 0 && msg.sources[0].num_chunks > 0 && (
               <div className="bubble-sources">
                 Researched from {msg.sources[0].num_chunks} section(s) of your documents.
+              </div>
+            )}
+            {msg.role === "AI" && evidenceSnippets(msg.sources).length > 0 && (
+              <div className="bubble-evidence">
+                <strong>PDF Evidence</strong>
+                {evidenceSnippets(msg.sources).map((source, index) => (
+                  <blockquote key={`${msg.id}-evidence-${index}`}>{source.snippet}</blockquote>
+                ))}
               </div>
             )}
           </div>

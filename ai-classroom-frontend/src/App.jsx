@@ -52,7 +52,7 @@ function Layout() {
         <div className="sidebar-brand">
           <div className="brand-icon">🎓</div>
           <div>
-            <p className="eyebrow">Gemini AI</p>
+            <p className="eyebrow">Local AI</p>
             <h1>Tutor</h1>
           </div>
         </div>

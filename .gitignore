@@ -44,3 +44,4 @@ Thumbs.db
 # Project Specific
 ai-classroom-backend/media/
 ai-classroom-backend/chromadb/
+ai-classroom-backend/temp_chroma/

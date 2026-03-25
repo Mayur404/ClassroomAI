@@ -8,7 +8,7 @@ Your original plan uses `qwen2.5:4b`. That is usable, but not the strongest choi
 
 ### Option A: One-Model Simplicity
 
-Use `qwen2.5:7b-instruct` for everything.
+Use `qwen2.5:7b` for everything.
 
 Why:
 
@@ -20,7 +20,7 @@ Why:
 
 Use:
 
-- `qwen2.5:7b-instruct` for syllabus parsing, scheduling, essay grading, and chat
+- `qwen2.5:7b` for syllabus parsing, scheduling, essay grading, and chat
 - `qwen2.5-coder:7b` for coding assignment generation and coding feedback
 
 Why:
@@ -32,7 +32,7 @@ Why:
 
 Use:
 
-- `qwen2.5:14b-instruct` for parsing, planning, essay grading, and chat
+- `qwen2.5:14b` for parsing, planning, essay grading, and chat
 - `qwen2.5-coder:7b` or stronger coder model for code tasks
 
 Use this only if your machine can handle it smoothly during the demo.
@@ -41,7 +41,7 @@ Use this only if your machine can handle it smoothly during the demo.
 
 For a solo project and reliable local demo:
 
-- Primary model: `qwen2.5:7b-instruct`
+- Primary model: `qwen2.5:7b`
 - Secondary coding model: `qwen2.5-coder:7b`
 - Emergency fallback: `qwen2.5:4b`
 

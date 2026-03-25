@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -13,6 +13,13 @@ export default function CoursePage() {
   const [activeTab, setActiveTab] = useState("materials");
   const [answers, setAnswers] = useState({});
   const [results, setResults] = useState({});
+  const [expandedScheduleItems, setExpandedScheduleItems] = useState({});
+  const [expandedAnswerReviews, setExpandedAnswerReviews] = useState({});
+
+  useEffect(() => {
+    setExpandedScheduleItems({});
+    setExpandedAnswerReviews({});
+  }, [courseId]);
 
   const courseQuery = useQuery({
     queryKey: ["course", courseId],
@@ -44,7 +51,10 @@ export default function CoursePage() {
       });
       return res.data;
     },
-    onSuccess: () => assignmentsQuery.refetch(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["assignments", courseId] });
+      queryClient.invalidateQueries({ queryKey: ["courses"] });
+    },
   });
 
   const deleteCourse = useMutation({
@@ -52,7 +62,7 @@ export default function CoursePage() {
       await client.delete(`/courses/${courseId}/`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries(["courses"]);
+      queryClient.invalidateQueries({ queryKey: ["courses"] });
       navigate("/");
     },
   });
@@ -69,13 +79,64 @@ export default function CoursePage() {
     },
   });
 
+  const deleteAssignment = useMutation({
+    mutationFn: async (assignmentId) => {
+      await client.delete(`/assignments/${assignmentId}/`);
+      return assignmentId;
+    },
+    onSuccess: (assignmentId) => {
+      setResults((prev) => {
+        const next = { ...prev };
+        delete next[assignmentId];
+        return next;
+      });
+      setAnswers((prev) => {
+        const next = { ...prev };
+        delete next[assignmentId];
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ["assignments", courseId] });
+      queryClient.invalidateQueries({ queryKey: ["courses"] });
+    },
+  });
+
+  const deleteSubmission = useMutation({
+    mutationFn: async ({ assignmentId, submissionId }) => {
+      await client.delete(`/submissions/${submissionId}/`);
+      return { assignmentId, submissionId };
+    },
+    onSuccess: ({ assignmentId }) => {
+      setResults((prev) => {
+        const next = { ...prev };
+        delete next[assignmentId];
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ["assignments", courseId] });
+    },
+  });
+
   const deleteMaterial = useMutation({
     mutationFn: async (materialId) => {
-      await client.delete(`/materials/${materialId}/delete/`);
+      const res = await client.delete(`/materials/${materialId}/delete/`);
+      return res.data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["course", courseId], data);
+      queryClient.invalidateQueries({ queryKey: ["courses"] });
+      queryClient.invalidateQueries({ queryKey: ["assignments", courseId] });
+    },
+  });
+
+  const updateScheduleItem = useMutation({
+    mutationFn: async ({ scheduleId, completed }) => {
+      const res = await client.post(`/schedule/${scheduleId}/complete/`, {
+        completed,
+      });
+      return res.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries(["course", courseId]);
-      queryClient.invalidateQueries(["courses"]); // Update completed class counts in sidebar
+      queryClient.invalidateQueries({ queryKey: ["course", courseId] });
+      queryClient.invalidateQueries({ queryKey: ["courses"] });
     },
   });
 
@@ -89,11 +150,50 @@ export default function CoursePage() {
     }));
   };
 
-  const syncCourse = () => {
-    queryClient.invalidateQueries(["course", courseId]);
+  const syncCourse = (courseData) => {
+    if (courseData) {
+      queryClient.setQueryData(["course", courseId], courseData);
+    }
+    queryClient.invalidateQueries({ queryKey: ["courses"] });
+  };
+
+  const toggleScheduleExpanded = (scheduleId) => {
+    setExpandedScheduleItems((prev) => ({
+      ...prev,
+      [scheduleId]: !prev[scheduleId],
+    }));
+  };
+
+  const toggleAnswerReview = (assignmentId, questionNumber) => {
+    const key = `${assignmentId}-${questionNumber}`;
+    setExpandedAnswerReviews((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
   };
 
   const hasMaterials = courseQuery.data?.materials?.length > 0;
+
+  useEffect(() => {
+    if (!assignmentsQuery.data) return;
+
+    const persistedResults = {};
+    const persistedAnswers = {};
+
+    assignmentsQuery.data.forEach((assignment) => {
+      if (assignment.latest_submission) {
+        persistedResults[assignment.id] = assignment.latest_submission;
+        persistedAnswers[assignment.id] = assignment.latest_submission.answers || {};
+      }
+    });
+
+    if (Object.keys(persistedResults).length > 0) {
+      setResults((prev) => ({ ...prev, ...persistedResults }));
+    }
+    if (Object.keys(persistedAnswers).length > 0) {
+      setAnswers((prev) => ({ ...prev, ...persistedAnswers }));
+    }
+  }, [assignmentsQuery.data]);
 
   const completedCount = useMemo(
     () =>
@@ -219,6 +319,23 @@ export default function CoursePage() {
               </span>
             </div>
 
+            {courseQuery.data?.schedule_items?.length > 0 && (
+              <div className="path-summary">
+                <div className="path-summary-card">
+                  <span className="path-summary-label">Progress</span>
+                  <strong>{courseQuery.data?.schedule_progress_percent || 0}% complete</strong>
+                </div>
+                <div className="path-summary-card">
+                  <span className="path-summary-label">Next Up</span>
+                  <strong>{courseQuery.data?.next_class_topic || "All done"}</strong>
+                </div>
+                <div className="path-summary-card">
+                  <span className="path-summary-label">Materials</span>
+                  <strong>{courseQuery.data?.material_count || 0} source file(s)</strong>
+                </div>
+              </div>
+            )}
+
             {(courseQuery.data?.schedule_items || []).length === 0 ? (
               <p className="empty-state">
                 No learning path yet. Upload study materials first!
@@ -226,25 +343,90 @@ export default function CoursePage() {
             ) : (
               <div className="schedule-list stack compact">
                 {courseQuery.data.schedule_items.map((item) => (
-                  <div key={item.id} className="schedule-item">
-                    <div className="schedule-number">
-                      {item.class_number}
-                    </div>
-                    <div className="schedule-content">
-                      <strong>{item.topic}</strong>
-                      <div className="subtopics-list">
-                        {item.subtopics?.map((s, i) => (
-                          <span key={i} className="subtopic-tag">
-                            {s}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <span
-                      className={`chip status-${item.status.toLowerCase()}`}
+                  <div
+                    key={item.id}
+                    className={`schedule-item schedule-item-${item.status.toLowerCase()} ${
+                      expandedScheduleItems[item.id] ? "expanded" : ""
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      className="schedule-main"
+                      onClick={() => toggleScheduleExpanded(item.id)}
                     >
-                      {item.status}
-                    </span>
+                      <div className="schedule-number">
+                        {item.class_number}
+                      </div>
+                      <div className="schedule-content">
+                        <div className="schedule-title-row">
+                          <strong>{item.topic}</strong>
+                          <span
+                            className={`chip status-${item.status.toLowerCase()}`}
+                          >
+                            {item.status}
+                          </span>
+                        </div>
+                        <div className="subtopics-list">
+                          {item.subtopics?.slice(0, 3).map((s, i) => (
+                            <span key={i} className="subtopic-tag">
+                              {s}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <span className="schedule-expand-indicator">
+                        {expandedScheduleItems[item.id] ? "−" : "+"}
+                      </span>
+                    </button>
+
+                    {expandedScheduleItems[item.id] && (
+                      <div className="schedule-details">
+                        <div className="schedule-detail-block">
+                          <span className="schedule-detail-label">Focus Areas</span>
+                          <div className="schedule-detail-list">
+                            {(item.subtopics || []).map((subtopic, index) => (
+                              <span key={index} className="subtopic-tag detail">
+                                {subtopic}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="schedule-detail-block">
+                          <span className="schedule-detail-label">What you should be able to do</span>
+                          <ul className="schedule-objectives">
+                            {(item.learning_objectives || []).map((objective, index) => (
+                              <li key={index}>{objective}</li>
+                            ))}
+                          </ul>
+                        </div>
+
+                        <div className="schedule-details-footer">
+                          <span className="chip">{item.duration_minutes} min session</span>
+                          <button
+                            type="button"
+                            className={item.status === "COMPLETED" ? "btn-secondary" : "btn-primary"}
+                            onClick={() =>
+                              updateScheduleItem.mutate({
+                                scheduleId: item.id,
+                                completed: item.status !== "COMPLETED",
+                              })
+                            }
+                            disabled={
+                              updateScheduleItem.isPending &&
+                              updateScheduleItem.variables?.scheduleId === item.id
+                            }
+                          >
+                            {updateScheduleItem.isPending &&
+                            updateScheduleItem.variables?.scheduleId === item.id
+                              ? "Saving..."
+                              : item.status === "COMPLETED"
+                              ? "Mark as Pending"
+                              : "Mark as Completed"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -304,14 +486,35 @@ export default function CoursePage() {
 
             <div className="assignments-list stack compact">
               {(assignmentsQuery.data || []).map((a) => {
-                const isSubmitted = !!results[a.id];
-                const resultData = results[a.id];
+                const resultData = results[a.id] || a.latest_submission;
+                const isSubmitted = !!resultData;
+                const reviewByQuestion = Object.fromEntries(
+                  (resultData?.score_breakdown || []).map((item) => [
+                    String(item.question_number),
+                    item,
+                  ])
+                );
                 
                 return (
                   <div key={a.id} className="assignment-card panel">
-                    <div className="assignment-header">
-                      <span className="assignment-type">{a.type}</span>
-                      <strong>{a.title}</strong>
+                    <div className="assignment-header assignment-header-top">
+                      <div className="assignment-header-main">
+                        <span className="assignment-type">{a.type}</span>
+                        <strong>{a.title}</strong>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-icon text-danger"
+                        title="Delete Assignment"
+                        onClick={() => {
+                          if (window.confirm(`Delete "${a.title}"? This assignment and its submission history will be removed.`)) {
+                            deleteAssignment.mutate(a.id);
+                          }
+                        }}
+                        disabled={deleteAssignment.isPending && deleteAssignment.variables === a.id}
+                      >
+                        {deleteAssignment.isPending && deleteAssignment.variables === a.id ? "..." : "🗑️"}
+                      </button>
                     </div>
                     <p className="text-muted">{a.description}</p>
                     {a.questions && a.questions.length > 0 && (
@@ -351,6 +554,66 @@ export default function CoursePage() {
                                 disabled={isSubmitted || submitAssignment.isPending}
                               />
                             )}
+
+                            {isSubmitted && (() => {
+                              const review = reviewByQuestion[String(q.question_number)];
+                              const reviewKey = `${a.id}-${q.question_number}`;
+                              if (!review) return null;
+
+                              return (
+                                <div className="question-review">
+                                  <button
+                                    type="button"
+                                    className="btn-secondary review-toggle"
+                                    onClick={() => toggleAnswerReview(a.id, q.question_number)}
+                                  >
+                                    {expandedAnswerReviews[reviewKey]
+                                      ? "Hide Answer Review"
+                                      : "Show Answer Review"}
+                                  </button>
+
+                                  {expandedAnswerReviews[reviewKey] && (
+                                    <div className="review-panel">
+                                      <div className="review-row">
+                                        <span className="review-label">Marks</span>
+                                        <span className="review-value score">
+                                          {review.score} / {review.max_score}
+                                        </span>
+                                      </div>
+
+                                      {review.student_answer !== undefined && (
+                                        <div className="review-row stacked">
+                                          <span className="review-label">Your answer</span>
+                                          <p className="review-explanation">
+                                            {review.student_answer || "No answer submitted"}
+                                          </p>
+                                        </div>
+                                      )}
+
+                                      {a.type === "MCQ" && (
+                                        <div className="review-row">
+                                          <span className="review-label">Correct answer</span>
+                                          <span className="review-value correct">
+                                            {review.correct_answer || "Not available"}
+                                          </span>
+                                        </div>
+                                      )}
+
+                                      {(review.reasoning || review.explanation || review.feedback) && (
+                                        <div className="review-row stacked">
+                                          <span className="review-label">
+                                            {a.type === "MCQ" ? "Explanation" : "Reasoning"}
+                                          </span>
+                                          <p className="review-explanation">
+                                            {review.reasoning || review.explanation || review.feedback}
+                                          </p>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         ))}
                       </div>
@@ -362,7 +625,38 @@ export default function CoursePage() {
                         <div className="grading-score">
                           Score: <strong>{resultData.ai_grade}</strong> / {a.total_marks}
                         </div>
-                        <p className="text-muted">{resultData.ai_feedback?.overall_feedback}</p>
+                        <p className="text-muted">
+                          {a.type === "MCQ"
+                            ? "Click each question's answer review to see the correct option and explanation."
+                            : "Click each question's answer review to see marks, your answer, and grading reasoning."}
+                        </p>
+                        {a.type !== "MCQ" && resultData.ai_feedback?.overall_feedback && (
+                          <p className="text-muted">{resultData.ai_feedback.overall_feedback}</p>
+                        )}
+                        <div className="grading-actions">
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            onClick={() => {
+                              const submissionId = resultData?.id || a.latest_submission?.id;
+                              if (!submissionId) return;
+                              if (window.confirm(`Remove your current submission for "${a.title}" and retake it?`)) {
+                                deleteSubmission.mutate({ assignmentId: a.id, submissionId });
+                              }
+                            }}
+                            disabled={
+                              deleteSubmission.isPending &&
+                              deleteSubmission.variables?.assignmentId === a.id
+                            }
+                          >
+                            {deleteSubmission.isPending &&
+                            deleteSubmission.variables?.assignmentId === a.id
+                              ? "Removing..."
+                              : a.type === "MCQ"
+                              ? "Retake Quiz"
+                              : "Retake Assignment"}
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <div className="assignment-footer">

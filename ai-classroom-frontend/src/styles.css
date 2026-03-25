@@ -446,7 +446,7 @@ input::placeholder, textarea::placeholder {
 /* ─── Schedule / Learning Path ────────────────── */
 .schedule-item {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 0.75rem;
   padding: 0.75rem;
   background: var(--bg-hover);
@@ -456,6 +456,26 @@ input::placeholder, textarea::placeholder {
 }
 
 .schedule-item:hover { border-color: rgba(99,102,241,0.25); }
+.schedule-item.schedule-item-completed {
+  border-color: rgba(34, 197, 94, 0.3);
+  background: rgba(34, 197, 94, 0.06);
+}
+.schedule-item.expanded {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.schedule-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
 
 .schedule-number {
   width: 32px;
@@ -477,10 +497,30 @@ input::placeholder, textarea::placeholder {
   min-width: 0;
 }
 
+.schedule-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
 .schedule-content strong {
   font-size: 0.875rem;
   display: block;
-  margin-bottom: 0.25rem;
+}
+
+.schedule-expand-indicator {
+  min-width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 1rem;
+  flex-shrink: 0;
 }
 
 .subtopics-list {
@@ -496,6 +536,84 @@ input::placeholder, textarea::placeholder {
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text-muted);
+}
+
+.subtopic-tag.detail {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+}
+
+.path-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.75rem;
+}
+
+.path-summary-card {
+  padding: 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.path-summary-label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.path-summary-card strong {
+  font-size: 0.88rem;
+}
+
+.schedule-details {
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.schedule-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.schedule-detail-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.schedule-detail-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.schedule-objectives {
+  margin: 0;
+  padding-left: 1rem;
+  color: var(--text-main);
+  font-size: 0.8rem;
+}
+
+.schedule-objectives li {
+  margin-bottom: 0.3rem;
+}
+
+.schedule-details-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 /* ─── Markdown Content ────────────────────────── */
@@ -558,6 +676,17 @@ input::placeholder, textarea::placeholder {
   margin-bottom: 0.35rem;
 }
 
+.assignment-header-top {
+  justify-content: space-between;
+}
+
+.assignment-header-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .assignment-type {
   font-size: 0.6rem;
   padding: 0.15rem 0.45rem;
@@ -587,6 +716,69 @@ input::placeholder, textarea::placeholder {
 
 .question-item p { font-size: 0.8rem; color: var(--text-main); }
 .question-item strong { color: var(--secondary); }
+
+.question-review {
+  margin-top: 0.75rem;
+}
+
+.review-toggle {
+  padding: 0.45rem 0.75rem;
+  font-size: 0.78rem;
+}
+
+.review-panel {
+  margin-top: 0.65rem;
+  padding: 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  background: rgba(99, 102, 241, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.review-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.review-row.stacked {
+  display: block;
+}
+
+.review-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.review-value {
+  font-size: 0.8rem;
+  color: var(--text-main);
+  text-align: right;
+}
+
+.review-value.correct {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.review-value.score {
+  color: var(--secondary);
+  font-weight: 600;
+}
+
+.review-explanation {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-main);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
 
 .options-list {
   list-style: none;
@@ -652,6 +844,13 @@ input::placeholder, textarea::placeholder {
   font-size: 1.25rem;
   color: var(--success, #10b981);
   margin-bottom: 0.5rem;
+}
+
+.grading-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 /* ─── Chat Interface ──────────────────────────── */
@@ -736,6 +935,29 @@ input::placeholder, textarea::placeholder {
   margin-top: 0.35rem;
   padding-top: 0.25rem;
   border-top: 1px solid var(--border);
+}
+
+.bubble-evidence {
+  margin-top: 0.5rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.bubble-evidence strong {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--text-muted);
+}
+
+.bubble-evidence blockquote {
+  margin: 0 0 0.35rem;
+  padding: 0.45rem 0.6rem;
+  border-left: 2px solid var(--accent);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 0.45rem;
+  color: var(--text-secondary);
 }
 
 .typing-dots {
@@ -932,26 +1154,63 @@ input::placeholder, textarea::placeholder {
   height: 100%;
 }
 
+.progress-shell {
+  margin-top: 0.9rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.8rem;
+}
+
+.progress-meta strong {
+  color: var(--text-main);
+}
+
+.progress-meta span {
+  color: var(--text-muted);
+}
+
 .progress-bar {
-  height: 4px;
-  background: var(--border);
-  border-radius: 2px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
   position: relative;
   overflow: hidden;
-  margin-top: 0.75rem;
+  margin-bottom: 0.55rem;
 }
 
 .progress-fill {
   background: var(--gradient);
   height: 100%;
-  transition: width 0.4s;
+  transition: width 0.35s ease;
 }
 
-.progress-bar span {
+.progress-shell > span {
   display: block;
-  font-size: 0.7rem;
+  font-size: 0.76rem;
   color: var(--text-muted);
-  margin-top: 0.35rem;
+}
+
+.upload-summary {
+  margin-top: 0.45rem;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.upload-error {
+  margin-top: 0.65rem;
+  color: #fca5a5;
+  font-size: 0.78rem;
 }
 
 /* ─── States ──────────────────────────────────── */

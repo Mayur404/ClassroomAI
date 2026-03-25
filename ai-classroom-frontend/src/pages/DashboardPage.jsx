@@ -1,25 +1,40 @@
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+
+import client from "../api/client";
 import { useAuth } from "../contexts/AuthContext";
 
 export default function DashboardPage() {
   const { user, logout } = useAuth();
+
+  const coursesQuery = useQuery({
+    queryKey: ["courses"],
+    queryFn: async () => {
+      const res = await client.get("/courses/");
+      return res.data;
+    },
+    enabled: !!user,
+  });
+
+  const primaryCourse = coursesQuery.data?.[0] || null;
+  const primaryHref = primaryCourse ? `/learn/${primaryCourse.id}` : "/";
 
   return (
     <div className="stack">
       <section className="panel hero">
         <div>
           <p className="eyebrow">Welcome{user ? `, ${user.name}` : ""}</p>
-          <h2>Your Personal AI Tutor</h2>
+          <h2>Your Local AI Classroom</h2>
           <p>
-            Upload your study materials, ask questions, and get AI-generated
-            assignments — all powered by Google Gemini.
+            Upload PDFs, ask grounded questions, build learning paths, and generate assignments using a
+            local Ollama + RAG pipeline.
           </p>
         </div>
         <div className="actions">
           {user ? (
             <>
-              <Link to="/learn" className="btn-primary">
-                Go to Classroom →
+              <Link to={primaryHref} className="btn-primary">
+                {primaryCourse ? "Open Classroom ->" : "Create a Classroom ->"}
               </Link>
               <button className="btn-secondary" onClick={logout}>
                 Logout
@@ -27,7 +42,7 @@ export default function DashboardPage() {
             </>
           ) : (
             <Link to="/login" className="btn-primary">
-              Login to Start →
+              Login to Start ->
             </Link>
           )}
         </div>
@@ -35,27 +50,27 @@ export default function DashboardPage() {
 
       <section className="grid tri">
         <article className="panel feature-card">
-          <div className="feature-icon">📄</div>
+          <div className="feature-icon">PDF</div>
           <h3>Upload Materials</h3>
           <p>
-            Drop any PDF — syllabus, textbook chapter, or notes. The AI reads
-            and structures it into a learning path.
+            Add searchable PDFs, scanned PDFs, or pasted notes. The backend extracts text, runs OCR when
+            needed, and builds a structured learning path.
           </p>
         </article>
         <article className="panel feature-card">
-          <div className="feature-icon">💬</div>
-          <h3>Ask Questions</h3>
+          <div className="feature-icon">Q&A</div>
+          <h3>Ask Grounded Questions</h3>
           <p>
-            Chat with your AI tutor. It answers based strictly on your uploaded
-            materials using RAG technology.
+            The chat experience is retrieval-first, with answers anchored to the uploaded material instead
+            of generic model filler.
           </p>
         </article>
         <article className="panel feature-card">
-          <div className="feature-icon">📝</div>
-          <h3>Get Assignments</h3>
+          <div className="feature-icon">AI</div>
+          <h3>Generate Assignments</h3>
           <p>
-            The AI generates quizzes, essays, and coding problems from your
-            materials to test your understanding.
+            Create quizzes, essays, and coding tasks from course content, then grade submissions with
+            structured AI feedback.
           </p>
         </article>
       </section>

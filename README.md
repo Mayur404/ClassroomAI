@@ -1,96 +1,244 @@
-# 🎓 AI Classroom Tutor (100% Local & Free)
+# AI Classroom Tutor
 
-A complete, production-ready AI tutoring system that allows students to upload their coursework and interact with an AI Teacher. This project uses a **100% local, offline hybrid architecture**:
-1. **Local RAG (Retrieval-Augmented Generation)** for lightning-fast vector search over your documents.
-2. **Local LLM (Ollama / Llama 3.2)** for high-quality, private conversational answers and assignment generation without API costs.
+A local-first AI classroom platform for turning course PDFs into structured learning paths, grounded chat answers, and auto-generated assignments.
 
-![AI Classroom Screenshot](https://raw.githubusercontent.com/mayur/ai-classroom/main/docs/screenshot.png) *(Place your screenshot here)*
+The project is designed to run primarily on your own machine with Ollama, Django, React, SQLite, and ChromaDB. Recent work focused on making the pipeline faster, more reliable on scanned PDFs, and more strictly grounded in the uploaded material.
 
-## ✨ Features
+## What It Does
 
-- **🌐 100% Offline & Private:** Your data never leaves your machine. No API keys, no subscriptions, no rate limits.
-- **📚 Multi-Course Management:** Create isolated classrooms. Upload multiple PDFs or paste raw text per class.
-- **📄 Local Document Parsing:** Extracts and chunks PDF text entirely locally using `pdfplumber`. 
-- **🧠 Local Vector Search (RAG):** Uses `ChromaDB` and `sentence-transformers` (`all-MiniLM-L6-v2`) to embed chunks and perform vector similarity search instantly.
-- **💬 Conversational AI Teacher:** Powered by `Ollama` (`llama3.2`), the AI tutor answers questions strictly using your uploaded syllabus/materials. Chat history is preserved per classroom!
-- **🗺️ Auto-Learning Paths:** Automatically extracts topics from your materials and generates a class-by-class schedule.
-- **📝 Interactive Assignments:** Generates custom MCQ and Essay assignments based on your materials. Includes inline AI grading with personalized feedback.
-- **🎨 Premium UI:** A stunning, modern dark theme with glassmorphism effects, micro-animations, and a fully responsive tabbed interface.
+- Upload searchable PDFs, scanned PDFs, or pasted text
+- Extract text locally with PDF parsing plus OCR fallback
+- Build course topics and a class-by-class learning path
+- Answer questions using retrieval over uploaded material
+- Return PDF-grounded answers instead of generic LLM filler
+- Generate MCQ, essay, and coding assignments from course content
+- Grade submissions with structured AI feedback
 
----
+## Key Highlights
 
-## 🏗️ Architecture
+- Local LLM setup using Ollama with `qwen2.5:7b` and `qwen2.5-coder:7b`
+- Faster PDF extraction using `pypdfium2`
+- OCR support for scanned and image-heavy PDFs using `rapidocr-onnxruntime`
+- Hybrid retrieval using vector search plus lexical search
+- Structured generation with Pydantic schemas for schedule, assignment, and grading output
+- Upload progress UI plus backend extraction/indexing logs
+- Grounded chat answers with direct PDF evidence snippets
 
-1. **Frontend:** React + Vite (`@tanstack/react-query`, `react-router-dom`, `react-markdown`)
-2. **Backend:** Django Rest Framework
-3. **Database:** SQLite (Relational) + ChromaDB (Vector Store)
-4. **AI Models (All Local):**
-   - Embeddings: `all-MiniLM-L6-v2` (`sentence-transformers`)
-   - Generation: `llama3.2` (via `Ollama`)
+## Tech Stack
 
----
+### Frontend
 
-## 🚀 Quick Start
+- React 18
+- Vite
+- React Router
+- TanStack Query
+- Axios
+- React Markdown
 
-### 1. Prerequisites (Ollama)
-Because this app runs powerful AI models entirely on your hardware, you must install Ollama.
-1. Download and install [Ollama](https://ollama.com/).
-2. Open a terminal and download the required model (we use the blazing-fast 3B parameter Llama model):
-   ```bash
-   ollama run llama3.2
-   ```
-*(Keep Ollama running in the background while using the app).*
+### Backend
 
-### 2. Backend Setup
+- Django 5
+- Django REST Framework
+- django-cors-headers
+- django-allauth
+- Token authentication
 
-Navigate to the backend directory and set up your Python environment:
+### Data Layer
 
-```bash
+- SQLite for application data
+- ChromaDB for vector storage
+- Local filesystem for uploaded materials
+
+### AI and Retrieval
+
+- Ollama for local model inference
+- Qwen 2.5 for generation
+- Qwen 2.5 Coder for coding-oriented generation and grading
+- sentence-transformers (`all-MiniLM-L6-v2`) for embeddings
+- Optional Ollama embedding support in the retrieval layer
+- Hybrid retrieval: semantic vector search plus lexical fallback/reranking
+
+### Document Processing
+
+- pdfplumber
+- pypdfium2
+- Pillow
+- rapidocr-onnxruntime
+
+## Architecture
+
+### High-Level Flow
+
+1. The frontend uploads a PDF or raw text to the Django API.
+2. The backend extracts text, optionally runs OCR, and cleans the content.
+3. The backend chunks and indexes the material in ChromaDB.
+4. The course summary is rebuilt into topics, policies, and a learning path.
+5. Chat, assignment generation, and grading use retrieval plus Ollama.
+
+### Main Backend Apps
+
+- `users`: custom user model and auth endpoints
+- `courses`: courses, uploaded materials, enrollments, schedules
+- `ai_service`: PDF extraction, OCR, RAG, generation, grading
+- `assignments`: assignment creation and publishing
+- `submissions`: answers, grading results, feedback
+- `chat`: course-grounded Q and A history
+- `analytics`: course stats and summary views
+
+## Project Structure
+
+```text
+.
+|- ai-classroom-backend/
+|  |- apps/
+|  |- config/
+|  |- manage.py
+|  |- requirements.txt
+|- ai-classroom-frontend/
+|  |- src/
+|  |- package.json
+|- docs/
+|- run.readme
+|- RUN.README.md
+```
+
+## Local AI Setup
+
+The backend is currently configured for:
+
+- `OLLAMA_MODEL_PRIMARY=qwen2.5:7b`
+- `OLLAMA_MODEL_CODER=qwen2.5-coder:7b`
+- `OLLAMA_BASE_URL=http://localhost:11434`
+
+You only need Ollama running in the background. You do not need to keep a separate terminal open for the coder model.
+
+## Quick Start
+
+For the exact Windows-first run guide, see [run.readme](./run.readme).
+
+### 1. Install and Prepare Ollama
+
+Download Ollama, then download the models once:
+
+```powershell
+ollama run qwen2.5:7b
+```
+
+Exit the chat with:
+
+```text
+/bye
+```
+
+Then:
+
+```powershell
+ollama run qwen2.5-coder:7b "hello"
+```
+
+### 2. Start the Backend
+
+```powershell
 cd ai-classroom-backend
 python -m venv venv
-
-# On Windows:
-.\venv\Scripts\activate
-# On Mac/Linux:
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe manage.py migrate
+.\venv\Scripts\python.exe manage.py runserver
 ```
 
-Run the backend server (this will auto-create the database):
-```bash
-python manage.py makemigrations
-python manage.py migrate
-python manage.py runserver
+Backend URL:
+
+```text
+http://127.0.0.1:8000
 ```
 
-### 3. Frontend Setup
+### 3. Start the Frontend
 
-Open a new terminal and navigate to the frontend directory:
-
-```bash
+```powershell
 cd ai-classroom-frontend
 npm install
-
-# Start the Vite development server
 npm run dev
 ```
 
-The application will be running at `http://localhost:5173`.
+Frontend URL:
 
----
+```text
+http://localhost:5173
+```
 
-## 🧑‍🎓 Usage Guide
+## Environment Variables
 
-1. **Login:** Enter any name and email address. The demo uses passwordless local auth.
-2. **Create a Classroom:** Use the left sidebar to add a new course (e.g., "History 101").
-3. **Upload Materials:** Go to the "Materials" tab and upload a PDF or paste text. The system will extract topics and store vector embeddings locally.
-4. **Chat:** Ask the AI Teacher a question in the right-hand Chat sidebar. It performs a local vector search in ChromaDB and answers based strictly on your PDF! Switch between classrooms and your chat history persists.
-5. **Assignments:** Navigate to the "Assignments" tab to generate and take interactive quizzes graded by the local AI.
+The main backend environment values are:
 
----
+```env
+DJANGO_SECRET_KEY=dev-secret-key-12345
+DJANGO_DEBUG=true
+DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost
+INSTITUTE_EMAIL_DOMAIN=iiitdwd.ac.in
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL_PRIMARY=qwen2.5:7b
+OLLAMA_MODEL_CODER=qwen2.5-coder:7b
+OLLAMA_EMBED_MODEL=
+OLLAMA_EMBED_KEEP_ALIVE=30m
+```
 
-## 🤝 Contributing
+## Current Performance and Quality Improvements
 
-Feel free to fork this project, submit pull requests, or open issues. It's designed to be a premier starting point for private, offline EdTech applications!
+- Fast upload path that avoids unnecessary AI schedule generation during upload
+- Adaptive OCR so normal text PDFs do not waste time on OCR
+- Conditional table extraction to reduce expensive parsing on pages that do not need it
+- Adaptive chunk sizing to reduce indexing overhead on larger PDFs
+- Cached lexical retrieval for repeated questions
+- Cached repeated search results with invalidation on material updates
+- Keep-alive and connection pooling for Ollama calls
+- Retrieval-first factual chat answers with direct PDF evidence
+
+## Testing
+
+### Backend Tests
+
+```powershell
+cd ai-classroom-backend
+.\venv\Scripts\python.exe manage.py test apps.chat.tests apps.ai_service.tests apps.courses.tests apps.assignments.tests
+```
+
+### Compile Check
+
+```powershell
+cd ai-classroom-backend
+.\venv\Scripts\python.exe -m compileall apps\ai_service apps\chat apps\courses config
+```
+
+### Frontend Build
+
+```powershell
+cd ai-classroom-frontend
+npm run build
+```
+
+## Typical User Flow
+
+1. Create a classroom
+2. Upload materials in the Materials tab
+3. Let the app extract topics and build the learning path
+4. Ask grounded questions in chat
+5. Generate assignments from the uploaded material
+6. Submit answers and review AI feedback
+
+## Notes for GitHub
+
+- The repo is local-first and optimized for development on Windows
+- Uploaded files, SQLite data, and vector storage are created locally during use
+- If you want a cleaner public demo, consider adding screenshots or a short demo GIF to `docs/`
+- `run.readme` is the simplest handoff file for people who just want to run the app
+
+## Future Directions
+
+- True background jobs plus live processing percentages
+- Page-level citations for answers
+- Multimodal vision model support for diagram understanding
+- Deployment profile for a hosted demo environment
+
+## License
+
+Add your preferred license before publishing the repository publicly.
