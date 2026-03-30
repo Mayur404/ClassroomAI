@@ -47,28 +47,91 @@ export default function ChatInterface({ courseId }) {
     e.preventDefault();
     if (!input.trim()) return;
 
-    const userMessage = { role: "STUDENT", message: input, id: Date.now() };
-    setMessages((prev) => [...prev, userMessage]);
+    const currentInput = input;
+    const userMessage = { role: "STUDENT", message: currentInput, id: Date.now() };
+    const tempAiId = Date.now() + 1;
+    
+    // Add user message
+    setMessages((prev) => [
+      ...prev, 
+      userMessage
+    ]);
+    
     setInput("");
     setIsTyping(true);
 
     try {
-      const response = await client.post(`/courses/${courseId}/chat/ask/`, { message: input });
-      const aiMessage = {
-        role: "AI",
-        message: response.data.ai_response,
-        sources: response.data.sources,
-        id: response.data.id || Date.now() + 1,
-      };
-      setMessages((prev) => [...prev, aiMessage]);
+      const token = localStorage.getItem("ai-classroom-token");
+      const baseURL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
+      
+      const response = await fetch(`${baseURL}/courses/${courseId}/chat/stream/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": token ? `Token ${token}` : ""
+        },
+        body: JSON.stringify({ message: currentInput })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP Error: ${response.status}`);
+      }
+
+      // Removed instant dot hiding to let it wait for the first token
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      
+      let incomingBuffer = "";
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        incomingBuffer += decoder.decode(value, { stream: true });
+        const lines = incomingBuffer.split('\n');
+        
+        // Keep the last partial line in the buffer
+        incomingBuffer = lines.pop() || "";
+        
+        for (const line of lines) {
+          if (line.trim().startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === 'token') {
+                setIsTyping(false); // Hide typing dots when first token arrives
+                setMessages(prev => {
+                  const exists = prev.some(m => m.id === tempAiId);
+                  if (exists) {
+                    return prev.map(msg => msg.id === tempAiId ? { ...msg, message: msg.message + data.text } : msg);
+                  }
+                  return [...prev, { role: "AI", message: data.text, id: tempAiId, sources: [] }];
+                });
+              } else if (data.type === 'sources') {
+                setMessages(prev => {
+                  const exists = prev.some(m => m.id === tempAiId);
+                  if (exists) {
+                    return prev.map(msg => msg.id === tempAiId ? { ...msg, sources: data.documents } : msg);
+                  }
+                  return [...prev, { role: "AI", message: "", id: tempAiId, sources: data.documents }];
+                });
+              }
+            } catch (err) {
+              console.error("SSE parse error", err);
+            }
+          }
+        }
+      }
     } catch (error) {
       console.error("Chat error:", error);
-      setMessages((prev) => [
-        ...prev,
-        { role: "AI", message: "Sorry, I encountered an error. Please try again.", id: Date.now() + 2 },
-      ]);
-    } finally {
       setIsTyping(false);
+      setMessages((prev) => prev.map(msg => {
+        if (msg.id === tempAiId && !msg.message) {
+          return { ...msg, message: "Sorry, I encountered an error. Please try again." };
+        }
+        return msg;
+      }));
     }
   };
 
@@ -87,7 +150,7 @@ export default function ChatInterface({ courseId }) {
         </div>
         {messages.length > 0 && (
           <button className="btn-clear" onClick={clearChat} title="Clear Chat">
-            🗑️
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
           </button>
         )}
       </div>
@@ -106,11 +169,7 @@ export default function ChatInterface({ courseId }) {
                 msg.message
               )}
             </div>
-            {msg.sources && msg.sources.length > 0 && msg.sources[0].num_chunks > 0 && (
-              <div className="bubble-sources">
-                Researched from {msg.sources[0].num_chunks} section(s) of your documents.
-              </div>
-            )}
+
             {msg.role === "AI" && evidenceSnippets(msg.sources).length > 0 && (
               <div className="bubble-evidence">
                 <strong>PDF Evidence</strong>

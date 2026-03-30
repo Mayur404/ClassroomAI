@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 class FallbackAnswerGenerator:
     """Generate simple answers from retrieved chunks when LLM unavailable."""
     
+    def get_fallback_answer(self, question: str, course=None, chunks: list[str] = None) -> str:
+        """Get fallback answer when LLM is down."""
+        return "LLM service is currently unavailable. Please ensure Ollama is running."
+
     @staticmethod
     def generate_from_chunks(question: str, chunks: list[str], max_length: int = 300) -> str:
         """Create answer by extracting most relevant sentences from chunks."""
@@ -54,15 +58,19 @@ class FallbackAnswerGenerator:
         score_breakdown = []
         total = 0
         
+        def normalize(val):
+            import re
+            return re.sub(r"\s+", " ", str(val or "").strip().lower().rstrip(".:-"))
+        
         for index, question in enumerate(questions, start=1):
             question_num = int(question.get("question_number", index))
             max_score = int(question.get("marks", 1))
             
             # Get correct answer
             correct_answer = answer_key.get(str(question_num), {}).get("correct_option", "")
-            student_answer = str(answers.get(question_num, "")).strip()
+            student_answer = str(answers.get(question_num, answers.get(str(question_num), ""))).strip()
             
-            is_correct = student_answer.lower() == correct_answer.lower()
+            is_correct = bool(correct_answer) and normalize(student_answer) == normalize(correct_answer)
             score = max_score if is_correct else 0
             total += score
             

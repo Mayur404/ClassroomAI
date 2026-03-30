@@ -28,24 +28,13 @@ class StreamingAnswerGenerator:
         course_id: int, 
         question: str, 
         user=None,
-        include_context: bool = True
+        include_context: bool = True,
+        message_id: int = None
     ) -> Generator[str, None, None]:
         """
         Stream answer to a question as tokens are generated.
         
-        Yields JSON strings containing:
-        - token: Individual response token
-        - type: 'token' | 'sources' | 'done' | 'error'
-        - timestamp: When token was generated
-        
-        Args:
-            course_id: Course database ID
-            question: User's question
-            user: User object for context retrieval
-            include_context: Whether to include conversation context
-        
-        Yields:
-            JSON strings suitable for SSE transmission
+        Yields JSON strings suitable for SSE transmission.
         """
         try:
             # Start event
@@ -75,197 +64,173 @@ class StreamingAnswerGenerator:
                         if msg.role == "STUDENT":
                             context_parts.append(f"Q: {msg.message}")
                         else:
-                            context_parts.append(f"A: {msg.ai_response[:200]}")
+                            # Use ai_response or message depending on field name
+                            resp = getattr(msg, 'ai_response', msg.message)
+                            context_parts.append(f"A: {resp[:200]}")
                     
                     if context_parts:
                         context_str = "\n".join(context_parts)
                 except Exception as e:
                     logger.warning(f"Failed to get context: {e}")
             
-            # Get relevant documents
-            relevant_docs = search_course(
+            # Get relevant documents (list of strings)
+            relevant_chunks = search_course(
                 course_id=course.id,
                 query=question,
                 top_k=5
             )
             
-            if not relevant_docs:
+            response_text = ""
+            
+            if not relevant_chunks:
                 # Fallback if no documents found
                 yield self._format_event('info', {
                     'message': 'No relevant documents found, using fallback'
                 })
                 fallback_answer = self.fallback_generator.get_fallback_answer(
                     question=question,
-                    course=course
+                    course=course,
+                    chunks=[]
                 )
+                response_text = fallback_answer
                 for token in fallback_answer.split():
                     yield self._format_event('token', {'text': token + ' '})
             else:
-                # Stream tokens from LLM
+                # Try to stream tokens from LLM
                 token_count = 0
                 try:
-                    # Note: This would need to be implemented in services.py
-                    # For now, use the fallback approach
-                    from ollama import generate
+                    # Attempt to use Ollama
+                    import requests
+                    from django.conf import settings
                     
                     # Build prompt with context
                     system_prompt = self._build_system_prompt(
                         course=course,
-                        documents=relevant_docs,
+                        chunks=relevant_chunks,
                         context=context_str
                     )
                     
-                    # Stream from Ollama
-                    from django.conf import settings
+                    # Direct HTTP call to Ollama to be safer than the library
+                    payload = {
+                        "model": settings.OLLAMA_MODEL_PRIMARY,
+                        "prompt": question,
+                        "system": system_prompt,
+                        "stream": True,
+                        "options": {
+                            "num_ctx": 4096,
+                            "temperature": 0.2,
+                        }
+                    }
                     
-                    response_text = ""
-                    for chunk in generate(
-                        model=settings.OLLAMA_MODEL_PRIMARY,
-                        prompt=question,
-                        system=system_prompt,
-                        stream=True,
-                        keep_alive=settings.OLLAMA_EMBED_KEEP_ALIVE or "30m"
-                    ):
-                        if 'response' in chunk:
-                            token = chunk['response']
-                            response_text += token
-                            token_count += 1
-                            
-                            # Yield token for streaming
-                            yield self._format_event('token', {
-                                'text': token,
-                                'token_count': token_count
-                            })
-                except ImportError:
-                    # Fallback if ollama package not found
-                    logger.warning("Ollama package not available, using fallback")
+                    ollama_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate"
+                    resp = requests.post(ollama_url, json=payload, stream=True, timeout=120)
+                    resp.raise_for_status()
+                    
+                    for line in resp.iter_lines():
+                        if line:
+                            chunk_data = json.loads(line)
+                            token = chunk_data.get('response', '')
+                            if token:
+                                response_text += token
+                                token_count += 1
+                                yield self._format_event('token', {
+                                    'text': token,
+                                    'token_count': token_count
+                                })
+                            if chunk_data.get('done'):
+                                break
+                                
+                except Exception as e:
+                    # Fallback if ollama fails or not installed
+                    logger.warning(f"LLM generation failed: {str(e)}")
+                    
+                    yield self._format_event('info', {
+                        'message': 'LLM unavailable, extracting relevant parts...'
+                    })
+                    
                     fallback_answer = self.fallback_generator.get_fallback_answer(
                         question=question,
-                        course=course
+                        course=course,
+                        chunks=relevant_chunks
                     )
-                    for token in fallback_answer.split():
-                        response_text += token + " "
-                        yield self._format_event('token', {'text': token + ' '})
+                    response_text = fallback_answer
+                    # Yield in small chunks to simulate streaming
+                    words = fallback_answer.split()
+                    for i in range(0, len(words), 3):
+                        chunk = " ".join(words[i:i+3]) + " "
+                        yield self._format_event('token', {'text': chunk})
                 
-                # Yield sources after response
+                # Update the database layer with the completed response 
+                if message_id and response_text:
+                    from apps.chat.models import ChatMessage
+                    try:
+                        message_obj = ChatMessage.objects.get(id=message_id)
+                        message_obj.ai_response = response_text
+                        # Sources are just chunks here
+                        message_obj.sources = [
+                            {'text': chunk[:200], 'index': i}
+                            for i, chunk in enumerate(relevant_chunks)
+                        ]
+                        message_obj.save(update_fields=['ai_response', 'sources'])
+                    except Exception as e:
+                        logger.error(f"Failed to update chat message: {e}")
+                
+                # Yield sources metadata
                 yield self._format_event('sources', {
                     'documents': [
                         {
-                            'name': doc.get('document_name', 'Unknown'),
-                            'section': doc.get('section_direct', ''),
-                            'page': doc.get('page'),
-                            'relevance': doc.get('relevance_score', 0)
+                            'name': f"Source {i+1}",
+                            'snippet': chunk[:150],
+                            'num_chunks': len(relevant_chunks),
                         }
-                        for doc in relevant_docs
+                        for i, chunk in enumerate(relevant_chunks[:3])
                     ]
                 })
             
             # Completion event
-            yield self._format_event('done', {'timestamp': timezone.now().isoformat()})
+            yield self._format_event('complete', {
+                'timestamp': timezone.now().isoformat(),
+                'answer': response_text
+            })
             
-        except ValueError as e:
-            yield self._format_event('error', {'message': str(e)})
         except Exception as e:
             logger.error(f"Streaming error: {e}", exc_info=True)
-            yield self._format_event('error', {'message': 'Failed to generate response'})
+            yield self._format_event('error', {'message': f"Error: {str(e)}"})
     
     def _format_event(self, event_type: str, data: Dict[str, Any]) -> str:
-        """
-        Format data as SSE event string.
-        
-        Args:
-            event_type: Type of event (token, sources, done, error, etc)
-            data: Event data dictionary
-        
-        Returns:
-            SSE-formatted event string
-        """
+        """Format data as SSE event string."""
         event_data = {
             'type': event_type,
             'timestamp': timezone.now().isoformat(),
             **data
         }
-        
-        # Format as Server-Sent Event
         json_str = json.dumps(event_data)
         return f"data: {json_str}\n\n"
     
-    def _build_system_prompt(
-        self,
-        course,
-        documents,
-        context: str = ""
-    ) -> str:
-        """
-        Build system prompt with course context and document sources.
-        
-        Args:
-            course: Course object
-            documents: List of relevant documents
-            context: Previous conversation context
-        
-        Returns:
-            System prompt string
-        """
-        prompt = f"""You are an AI tutor for {course.name}.
+    def _build_system_prompt(self, course, chunks, context: str = "") -> str:
+        """Build system prompt with course context."""
+        prompt = f"""You are an expert AI teacher for '{course.name}'.
+Answer ONLY using the provided materials. If unsure, say you don't know.
 
-Your role:
-- Answer questions based on course materials
-- Be clear and educational
-- Cite specific sections when referencing materials
-- Help students understand concepts deeply
-
-Course Level: {course.level}
-Prerequisites: {course.prerequisites or 'None'}
-
+Materials:
 """
+        for i, chunk in enumerate(chunks[:3], 1):
+            prompt += f"[{i}] {chunk}\n\n"
         
-        # Add document sources
-        if documents:
-            prompt += "Available course materials:\n"
-            for i, doc in enumerate(documents[:3], 1):
-                prompt += f"{i}. {doc.get('document_name', 'Document')}"
-                if doc.get('section_direct'):
-                    prompt += f" - Section: {doc.get('section_direct')}"
-                prompt += "\n"
-        
-        # Add conversation context
         if context:
-            prompt += f"\nConversation context:\n{context}\n"
+            prompt += f"\nRecent Context:\n{context}\n"
         
-        prompt += "\nRespond directly to the student's question. Be helpful and clear."
-        
+        prompt += "\nAnswer the student question clearly."
         return prompt
 
 
-def stream_response_to_sse(
-    course_id: int,
-    question: str,
-    user=None,
-    include_context: bool = True
-) -> Generator[str, None, None]:
-    """
-    Public function to stream response as SSE.
-    
-    Usage in Django view:
-        return StreamingHttpResponse(
-            stream_response_to_sse(course_id, question, user),
-            content_type='text/event-stream'
-        )
-    
-    Args:
-        course_id: Course ID
-        question: User question
-        user: User object
-        include_context: Include conversation context
-    
-    Yields:
-        SSE-formatted event strings
-    """
+def stream_response_to_sse(course_id, question, user=None, include_context=True, message_id=None):
+    """Public function to stream response as SSE."""
     generator = StreamingAnswerGenerator()
     yield from generator.stream_question_answer(
         course_id=course_id,
         question=question,
         user=user,
-        include_context=include_context
+        include_context=include_context,
+        message_id=message_id
     )

@@ -50,20 +50,21 @@ function Layout() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="brand-icon">🎓</div>
           <div>
-            <p className="eyebrow">Local AI</p>
-            <h1>Tutor</h1>
+            <p className="eyebrow">Platform</p>
+            <h1>AI-Classroom</h1>
           </div>
         </div>
         <nav>
           <NavLink to="/">
-            <span className="nav-icon">🏠</span> Dashboard
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="nav-icon"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            Dashboard
           </NavLink>
           {user && (
             <div className="sidebar-section">
               <div className="sidebar-section-header">
-                <span className="nav-icon">📚</span> My Classrooms
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="nav-icon"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+                My Classrooms
               </div>
               <div className="course-list">
                 {coursesQuery.isLoading ? (
@@ -117,8 +118,10 @@ function Layout() {
                 <button 
                   className="btn-secondary add-course-btn"
                   onClick={() => setIsCreating(true)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}
                 >
-                  + New Classroom
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  New Classroom
                 </button>
               )}
             </div>

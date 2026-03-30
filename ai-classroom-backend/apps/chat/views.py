@@ -25,7 +25,7 @@ class ChatAskView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, course_id):
-        course = get_object_or_404(Course, id=course_id, teacher=request.user)
+        course = get_object_or_404(Course, id=course_id)
         question = str(request.data.get("message", "")).strip()
         if not question:
             return Response({"detail": "Message cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
@@ -73,7 +73,7 @@ class ChatStreamingView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, course_id):
-        course = get_object_or_404(Course, id=course_id, teacher=request.user)
+        course = get_object_or_404(Course, id=course_id)
         question = str(request.data.get("message", "")).strip()
         
         if not question:
@@ -97,7 +97,8 @@ class ChatStreamingView(APIView):
                 course_id=course_id,
                 question=question,
                 user=request.user,
-                include_context=True
+                include_context=True,
+                message_id=student_message.id
             ),
             content_type='text/event-stream'
         )

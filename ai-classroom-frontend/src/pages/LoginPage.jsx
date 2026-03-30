@@ -20,7 +20,7 @@ export default function LoginPage() {
     setError("");
     try {
       await login({ name: name.trim(), email: email.trim(), role: "STUDENT" });
-      navigate("/learn");
+      navigate("/");
     } catch (err) {
       setError("Login failed. Please try again.");
       setLoading(false);
@@ -31,8 +31,7 @@ export default function LoginPage() {
     <div className="login-page">
       <section className="login-card panel">
         <div className="login-header">
-          <div className="login-icon">🎓</div>
-          <h2>Welcome to AI Tutor</h2>
+          <h2>Welcome to AI-Classroom</h2>
           <p className="text-muted">Enter your details to start learning</p>
         </div>
         {error && <div className="error-message">{error}</div>}
@@ -42,7 +41,7 @@ export default function LoginPage() {
             <input
               id="name"
               type="text"
-              placeholder="e.g. Mayur"
+              placeholder=""
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoFocus
@@ -53,7 +52,7 @@ export default function LoginPage() {
             <input
               id="email"
               type="email"
-              placeholder="e.g. mayur@example.com"
+              placeholder=""
               value={email}
               onChange={(e) => setEmail(e.target.value)}
             />

@@ -165,87 +165,50 @@ class SyllabusUploadView(APIView):
         course = get_object_or_404(Course, id=course_id, teacher=request.user)
         serializer = SyllabusUploadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        request_started_at = time.perf_counter()
 
         title = serializer.validated_data.get("title") or "Uploaded Material"
         uploaded_file = serializer.validated_data.get("syllabus_pdf")
         raw_text = serializer.validated_data.get("syllabus_text", "")
-        extraction_metadata = None
-
-        logger.info(
-            "Material upload started for course=%s title=%s mode=%s size=%s",
-            course.id,
-            title,
-            "pdf" if uploaded_file else "text",
-            _humanize_bytes(getattr(uploaded_file, "size", 0)),
-        )
 
         with transaction.atomic():
-            material = CourseMaterial.objects.create(course=course, title=title)
+            material = CourseMaterial.objects.create(
+                course=course, 
+                title=title,
+                parse_status=ParseStatus.PENDING
+            )
 
             if uploaded_file:
                 material.file = uploaded_file
                 material.save(update_fields=["file"])
-                logger.info("Stored uploaded file for material=%s at %s", material.id, material.file.name)
-                extraction_started_at = time.perf_counter()
-                extraction_result = extract_pdf_content(material.file.path)
-                raw_text = extraction_result["text"]
-                extraction_metadata = extraction_result["metadata"]
-                logger.info(
-                    "Extraction finished for material=%s duration=%.2fs metadata=%s",
-                    material.id,
-                    time.perf_counter() - extraction_started_at,
-                    extraction_metadata,
-                )
+                
+                # Run extraction and indexing synchronously (Blocking)
+                from apps.background_logic import extract_pdf_logic
+                extract_pdf_logic(material.id, material.file.path)
+                
+                logger.info("Finished synchronous extraction for material=%s", material.id)
+            elif raw_text:
+                material.content_text = raw_text
+                material.save(update_fields=["content_text"])
+                
+                # Run indexing synchronously (Blocking)
+                from apps.background_logic import index_material_logic
+                index_material_logic(material.id)
+                
+                logger.info("Finished synchronous indexing for material=%s", material.id)
             else:
-                logger.info("Text material received for material=%s with %s characters", material.id, len(raw_text))
-
-            if not raw_text:
-                logger.warning("Material upload failed for course=%s title=%s because no text was extracted", course.id, title)
                 material.delete()
-                detail = "No text could be extracted."
-                if extraction_metadata and extraction_metadata.get("warnings"):
-                    detail = (
-                        "No text could be extracted from this PDF. "
-                        f"{extraction_metadata['warnings'][0]} "
-                        "Use a searchable PDF or paste the text directly."
-                    )
-                return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "No content provided (file or text required)."}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-            material.content_text = raw_text
-
-            logger.info("Starting indexing for material=%s", material.id)
-            indexing_started_at = time.perf_counter()
-            index_result = index_course_materials(course.id, material.id, raw_text)
-            
-            # Also build document structure for enhanced heading-based queries
-            structure_result = index_material_with_structure(course.id, material.id, raw_text)
-            index_result["document_structure"] = structure_result
-            
-            if extraction_metadata:
-                index_result["extraction"] = extraction_metadata
-            material.extracted_topics = index_result.get("topics", [])
-            material.parse_status = ParseStatus.SUCCESS if index_result["status"] == "SUCCESS" else ParseStatus.FAILED
-            material.save(update_fields=["content_text", "extracted_topics", "parse_status"])
-            logger.info(
-                "Indexing completed for material=%s status=%s chunks=%s topics=%s sections=%s duration=%.2fs",
-                material.id,
-                index_result.get("status"),
-                index_result.get("num_chunks"),
-                len(material.extracted_topics),
-                structure_result.get("sections_found", 0),
-                time.perf_counter() - indexing_started_at,
-            )
-
-            logger.info("Starting fast schedule rebuild after material=%s upload", material.id)
-            _rebuild_schedule(course, latest_index_result=index_result, use_ai=False)
-
-        logger.info(
-            "Material upload completed for course=%s material=%s duration=%.2fs",
-            course.id,
-            material.id,
-            time.perf_counter() - request_started_at,
-        )
+        # Re-fetch course to get updated materials and statuses
+        course.refresh_from_db()
+        
+        # Rebuild schedule and update course summary
+        _rebuild_schedule(course, use_ai=False)
+        
+        # Return the course - processing is already done
         return Response(CourseSerializer(course).data, status=status.HTTP_200_OK)
 
 

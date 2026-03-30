@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=aiclassroom
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: 
+      context: ./ai-classroom-backend
+      dockerfile: Dockerfile
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3
+    volumes:
+      - ./ai-classroom-backend:/app
+      - media_volume:/app/media
+    environment:
+      - DEBUG=False
+      - ENVIRONMENT=production
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/aiclassroom
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: 
+      context: ./ai-classroom-backend
+    command: celery -A apps.celery_tasks worker --loglevel=info
+    volumes:
+      - ./ai-classroom-backend:/app
+      - media_volume:/app/media
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/aiclassroom
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+    depends_on:
+      - backend
+
+  frontend:
+    build:
+      context: ./ai-classroom-frontend
+      args:
+        - VITE_API_BASE_URL=/api
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  media_volume:

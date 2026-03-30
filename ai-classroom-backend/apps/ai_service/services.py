@@ -1284,8 +1284,10 @@ def _normalize_assignment_payload(course, assignment_type: str, title: str, cove
             if correct_answer and correct_answer not in options:
                 options = [correct_answer, *[option for option in options if option != correct_answer]]
             question["options"] = _normalize_string_list(options, fallback=fallback_question["options"], limit=4)
+            # Ensure correct_option in answer_key is normalized exactly like options in the list
+            normalized_correct_answer = _normalize_spaces(correct_answer or (question["options"][0] if question["options"] else "")).strip(" .:-")
             normalized_answer_key[str(index)] = {
-                "correct_option": correct_answer or question["options"][0],
+                "correct_option": normalized_correct_answer,
                 "explanation": explanation,
             }
         else:
@@ -1418,7 +1420,9 @@ def _answer_lookup(answers: dict, question_number: int):
 
 
 def _normalized_text(value: Any) -> str:
-    return _stringify(value).strip().lower()
+    import re
+    text = _stringify(value).strip().lower().rstrip(".:-")
+    return re.sub(r"\s+", " ", text)
 
 
 def _format_mcq_overall_feedback(total_score: float, total_marks: float, score_breakdown: list[dict]) -> str:
@@ -1436,32 +1440,63 @@ def _format_mcq_overall_feedback(total_score: float, total_marks: float, score_b
     return " ".join(parts)
 
 
+def _coerce_mapping(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        if isinstance(dumped, dict):
+            return dumped
+
+    legacy_dict = getattr(value, "dict", None)
+    if callable(legacy_dict):
+        dumped = legacy_dict()
+        if isinstance(dumped, dict):
+            return dumped
+
+    return {}
+
+
 def _normalize_open_ended_score_breakdown(assignment, answers: dict, raw_breakdown: Any) -> list[dict]:
     breakdown_by_number = {}
     if isinstance(raw_breakdown, list):
-        for entry in raw_breakdown:
-            if not isinstance(entry, dict):
+        for i, entry in enumerate(raw_breakdown):
+            entry_dict = _coerce_mapping(entry)
+            if not entry_dict:
                 continue
             try:
-                question_number = int(entry.get("question_number"))
+                q_num_raw = entry_dict.get("question_number")
+                if q_num_raw is not None:
+                    question_number = int(q_num_raw)
+                else:
+                    question_number = i + 1
             except (TypeError, ValueError):
-                continue
-            breakdown_by_number[question_number] = entry
+                question_number = i + 1
+            breakdown_by_number[question_number] = entry_dict
 
     normalized_breakdown = []
     for index, question in enumerate(assignment.questions or [], start=1):
         question_number = int(question.get("question_number", index))
-        raw_entry = breakdown_by_number.get(question_number, {})
+        raw_entry = _coerce_mapping(breakdown_by_number.get(question_number, {}))
         max_score = float(_positive_int(question.get("marks"), 1))
+        raw_score = (
+            raw_entry.get("score")
+            or raw_entry.get("awarded_score")
+            or raw_entry.get("marks_awarded")
+            or raw_entry.get("points_awarded")
+            or 0
+        )
 
         try:
-            score = float(raw_entry.get("score", 0))
+            score = float(raw_score)
         except (TypeError, ValueError):
             score = 0.0
         score = max(0.0, min(score, max_score))
 
         reasoning = _stringify(
-            raw_entry.get("reasoning") or raw_entry.get("feedback"),
+            raw_entry.get("reasoning") or raw_entry.get("feedback") or raw_entry.get("comment"),
             "No detailed reasoning was provided.",
         )
         student_answer = _stringify(
@@ -1483,6 +1518,87 @@ def _normalize_open_ended_score_breakdown(assignment, answers: dict, raw_breakdo
     return normalized_breakdown
 
 
+def _keyword_set(value: Any) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9']+", _normalize_spaces(value).lower())
+        if len(token) >= 4 and token not in CHAT_STOPWORDS
+    }
+
+
+def _heuristic_open_ended_result(question: dict, response_text: str) -> tuple[float, str]:
+    cleaned_response = _normalize_spaces(response_text)
+    word_count = len(re.findall(r"\b\w+\b", cleaned_response))
+    if word_count == 0:
+        return 0.0, "No answer submitted."
+
+    prompt_keywords = _keyword_set(question.get("prompt"))
+    response_keywords = _keyword_set(cleaned_response)
+    keyword_overlap = len(prompt_keywords & response_keywords)
+    has_example = bool(
+        re.search(r"\b(for example|for instance|example|e\.g\.|such as)\b", cleaned_response, re.IGNORECASE)
+    )
+    multi_sentence = len(re.findall(r"[.!?]", cleaned_response)) >= 2 or "\n" in response_text
+
+    if word_count >= 45:
+        score_ratio = 0.9
+    elif word_count >= 25:
+        score_ratio = 0.82
+    elif word_count >= 12:
+        score_ratio = 0.72
+    elif word_count >= 6:
+        score_ratio = 0.58
+    else:
+        score_ratio = 0.4
+
+    if keyword_overlap >= 2:
+        score_ratio += 0.12
+    elif keyword_overlap == 1:
+        score_ratio += 0.07
+    elif prompt_keywords and word_count >= 8:
+        score_ratio -= 0.08
+
+    if has_example:
+        score_ratio += 0.05
+    if multi_sentence and word_count >= 18:
+        score_ratio += 0.03
+
+    if keyword_overlap == 0 and word_count < 6:
+        score_ratio = min(score_ratio, 0.35)
+
+    score_ratio = max(0.0, min(score_ratio, 1.0))
+
+    if score_ratio >= 0.92:
+        feedback = "Strong answer with clear understanding, useful detail, and a relevant example."
+    elif score_ratio >= 0.78:
+        feedback = "Good answer that shows solid understanding. Add a bit more precision or depth for full marks."
+    elif score_ratio >= 0.6:
+        feedback = "Reasonable answer with some relevant points. Expand the explanation or example to earn more marks."
+    elif score_ratio >= 0.35:
+        feedback = "The answer shows some effort, but it needs more course-specific detail and clearer explanation."
+    else:
+        feedback = "Very limited answer. Add the main concept and at least one clear supporting point or example."
+
+    return round(score_ratio, 4), feedback
+
+
+def _has_substantive_open_ended_answer(assignment, answers: dict) -> bool:
+    for index, question in enumerate(assignment.questions or [], start=1):
+        question_number = int(question.get("question_number", index))
+        response_text = _stringify(_answer_lookup(answers, question_number))
+        if len(re.findall(r"\b\w+\b", response_text)) >= 3:
+            return True
+    return False
+
+
+def _should_recover_open_ended_grading(score_breakdown: list[dict], assignment, answers: dict) -> bool:
+    if not score_breakdown:
+        return True
+    if any(float(item.get("score", 0) or 0) > 0 for item in score_breakdown):
+        return False
+    return _has_substantive_open_ended_answer(assignment, answers)
+
+
 def _format_open_ended_overall_feedback(total_score: float, total_marks: float, score_breakdown: list[dict]) -> str:
     parts = [f"Score: {round(total_score, 2)}/{total_marks}."]
     for item in score_breakdown[:6]:
@@ -1497,30 +1613,16 @@ def _fallback_grading(assignment, answers: dict) -> dict:
     score_breakdown = []
 
     for index, question in enumerate(assignment.questions or [], start=1):
+        question_number = int(question.get("question_number", index))
         max_score = float(_positive_int(question.get("marks"), 1))
-        response_text = _stringify(_answer_lookup(answers, index))
-        word_count = len(response_text.split())
-
-        if not response_text:
-            score = 0.0
-            feedback = "No answer submitted."
-        elif word_count >= 35:
-            score = max_score
-            feedback = "Strong answer with enough detail to cover the prompt."
-        elif word_count >= 20:
-            score = round(max_score * 0.8, 2)
-            feedback = "Good start, but add a little more depth or supporting detail."
-        elif word_count >= 8:
-            score = round(max_score * 0.55, 2)
-            feedback = "Partial answer. Expand the explanation and connect it more clearly to the topic."
-        else:
-            score = round(max_score * 0.25, 2)
-            feedback = "Very short answer. Add more complete reasoning or examples."
+        response_text = _stringify(_answer_lookup(answers, question_number))
+        score_ratio, feedback = _heuristic_open_ended_result(question, response_text)
+        score = round(max_score * score_ratio, 2)
 
         total_score += score
         score_breakdown.append(
             {
-                "question_number": question.get("question_number", index),
+                "question_number": question_number,
                 "score": score,
                 "max_score": max_score,
                 "feedback": feedback,
@@ -1559,7 +1661,13 @@ def grade_submission(assignment, answers: dict) -> dict:
             correct_answer = answer_entry["correct_option"]
             explanation = answer_entry["explanation"]
             student_answer = _stringify(_answer_lookup(answers, question_number), "")
-            is_correct = bool(correct_answer) and _normalized_text(student_answer) == _normalized_text(correct_answer)
+            correct_norm = _normalized_text(correct_answer)
+            student_norm = _normalized_text(student_answer)
+            is_correct = bool(correct_norm) and bool(student_norm) and (
+                student_norm == correct_norm or 
+                student_norm in correct_norm or 
+                correct_norm in student_norm
+            )
             score = max_score if is_correct else 0
             total += score
 
@@ -1591,19 +1699,47 @@ def grade_submission(assignment, answers: dict) -> dict:
             },
         }
 
+    rubric_by_number = {}
+    if isinstance(assignment.rubric, list):
+        for index, raw_entry in enumerate(assignment.rubric, start=1):
+            entry = _coerce_mapping(raw_entry)
+            if not entry:
+                continue
+            try:
+                question_number = int(entry.get("question_number", index))
+            except (TypeError, ValueError):
+                question_number = index
+            rubric_by_number[question_number] = _normalize_string_list(entry.get("criteria"))
+
+    grading_questions = []
+    for index, question in enumerate(assignment.questions or [], start=1):
+        question_number = int(question.get("question_number", index))
+        grading_questions.append(
+            {
+                "question_number": question_number,
+                "prompt": _stringify(question.get("prompt")),
+                "max_score": _positive_int(question.get("marks"), 1),
+                "criteria": rubric_by_number.get(question_number, []),
+            }
+        )
+
     grading_schema = GradingResponse.model_json_schema()
     prompt = f"""Grade this assignment submission.
 Title: {assignment.title}
-Rubric: {json.dumps(assignment.rubric)}
-Questions: {json.dumps(assignment.questions)}
+Questions and rubric: {json.dumps(grading_questions)}
 Answers: {json.dumps(answers)}
 
 Return JSON matching this schema:
 {json.dumps(grading_schema, ensure_ascii=True)}
 
 Requirements:
-- Grade strictly against the supplied rubric and questions.
-- Keep feedback concise, specific, and actionable.
+- Be generous and lenient with grading. Award partial credit generously for effort and relevant keywords.
+- Return exactly one score_breakdown item for every question, using the same question_number and max_score.
+- Only give 0 marks if the answer is completely blank or clearly unrelated to the question.
+- If the student shows partial understanding, usually give them at least 60% to 80% of the marks.
+- Reserve scores below 40% for answers that are extremely short, mostly incorrect, or off-topic.
+- Use full marks when the answer is clearly relevant, mostly correct, and reasonably complete.
+- Keep feedback encouraging, highlight what they did right, and then suggest improvements.
 - Do not invent student answers.
 - Return only valid JSON.
 """
@@ -1623,6 +1759,10 @@ Requirements:
             answers,
             parsed.score_breakdown,
         )
+        if _should_recover_open_ended_grading(score_breakdown, assignment, answers):
+            recovered = _fallback_grading(assignment, answers)
+            recovered["ai_feedback"]["grading_mode"] = "fallback-recovered"
+            return recovered
         total_score = round(sum(item["score"] for item in score_breakdown), 2)
         overall_feedback = _stringify(
             parsed.overall_feedback,

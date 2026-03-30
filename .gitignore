@@ -41,7 +41,17 @@ dist-ssr/
 .DS_Store
 Thumbs.db
 
+# Editor / Tooling
+.vscode/
+.idea/
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+*.sqlite3
+
 # Project Specific
 ai-classroom-backend/media/
 ai-classroom-backend/chromadb/
 ai-classroom-backend/temp_chroma/
+ai-classroom-backend/logs/

@@ -41,8 +41,8 @@ class AdaptiveDifficultyView(APIView):
         course = get_object_or_404(Course, id=course_id, teacher=request.user)
         student = get_object_or_404(User, id=student_id)
         
-        # Verify student is in course
-        if student not in course.students.all():
+        # Verify student is enrolled in course
+        if not course.enrollments.filter(student=student).exists():
             return Response(
                 {"detail": "Student not in this course"},
                 status=status.HTTP_403_FORBIDDEN
@@ -91,8 +91,8 @@ class ConversationSummaryView(APIView):
         course = get_object_or_404(Course, id=course_id, teacher=request.user)
         student = get_object_or_404(User, id=student_id)
         
-        # Verify student is in course
-        if student not in course.students.all():
+        # Verify student is enrolled in course
+        if not course.enrollments.filter(student=student).exists():
             return Response(
                 {"detail": "Student not in this course"},
                 status=status.HTTP_403_FORBIDDEN
@@ -137,8 +137,8 @@ class ConversationExportView(APIView):
         course = get_object_or_404(Course, id=course_id, teacher=request.user)
         student = get_object_or_404(User, id=student_id)
         
-        # Verify student is in course
-        if student not in course.students.all():
+        # Verify student is enrolled in course
+        if not course.enrollments.filter(student=student).exists():
             return Response(
                 {"detail": "Student not in this course"},
                 status=status.HTTP_403_FORBIDDEN
@@ -262,14 +262,14 @@ class DashboardMetricsView(APIView):
             metrics = feedback_service.get_feedback_quality_metrics(course)
             problems = feedback_service.identify_problem_areas(course, limit=3)
             
-            all_metrics["total_students"] += course.students.count()
+            all_metrics["total_students"] += course.enrollments.count()
             all_metrics["total_questions"] += sum(1 for _ in metrics)
             all_metrics["average_helpful_rate"].append(metrics["helpful_rate"])
             
             course_data.append({
                 "course_id": course.id,
                 "course_name": course.name,
-                "student_count": course.students.count(),
+                "student_count": course.enrollments.count(),
                 "helpful_rate": metrics["helpful_rate"],
                 "feedback_rate": metrics["feedback_rate"],
                 "trend": metrics["trend"],

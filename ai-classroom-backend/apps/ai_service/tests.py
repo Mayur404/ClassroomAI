@@ -1,9 +1,17 @@
+import json
+from types import SimpleNamespace
 from unittest import mock
 
 from django.test import SimpleTestCase
 
 from apps.ai_service.rag_service import _hybrid_rank_results, _search_result_cache, search_course
-from apps.ai_service.services import _group_ocr_detections, _merge_page_sources, _should_run_ocr
+from apps.ai_service.services import (
+    _fallback_grading,
+    _group_ocr_detections,
+    _merge_page_sources,
+    _should_run_ocr,
+    grade_submission,
+)
 
 
 class PdfEnhancementHelpersTests(SimpleTestCase):
@@ -71,3 +79,70 @@ class HybridSearchRankingTests(SimpleTestCase):
 
         self.assertEqual(first, second)
         mock_lexical.assert_called_once()
+
+
+class EssayGradingTests(SimpleTestCase):
+    def _essay_assignment(self, marks=20):
+        return SimpleNamespace(
+            type="ESSAY",
+            title="Essay Assignment",
+            total_marks=marks,
+            rubric=[
+                {
+                    "question_number": 1,
+                    "criteria": [
+                        "Explain the main concept accurately.",
+                        "Include a relevant example or application.",
+                    ],
+                }
+            ],
+            questions=[
+                {
+                    "question_number": 1,
+                    "prompt": "Explain photosynthesis and give one practical example.",
+                    "marks": marks,
+                }
+            ],
+            answer_key={},
+        )
+
+    @mock.patch("apps.ai_service.services.call_ollama")
+    def test_grade_submission_preserves_llm_scores_for_essay_breakdown(self, mock_call_ollama):
+        assignment = self._essay_assignment()
+        mock_call_ollama.return_value = json.dumps(
+            {
+                "total_score": 16,
+                "score_breakdown": [
+                    {
+                        "question_number": 1,
+                        "score": 16,
+                        "max_score": 20,
+                        "feedback": "Good understanding with a relevant example.",
+                        "student_answer": "Photosynthesis lets plants make food from sunlight.",
+                    }
+                ],
+                "overall_feedback": "Good work overall.",
+            }
+        )
+
+        result = grade_submission(
+            assignment=assignment,
+            answers={"1": "Photosynthesis lets plants make food from sunlight and store energy in glucose."},
+        )
+
+        self.assertEqual(result["total_score"], 16.0)
+        self.assertEqual(result["score_breakdown"][0]["score"], 16.0)
+        self.assertEqual(result["score_breakdown"][0]["max_score"], 20.0)
+        self.assertIn("Good understanding", result["score_breakdown"][0]["feedback"])
+
+    def test_fallback_grading_is_lenient_for_short_but_relevant_essay_answers(self):
+        assignment = self._essay_assignment(marks=10)
+
+        result = _fallback_grading(
+            assignment=assignment,
+            answers={"1": "Photosynthesis helps plants make food. For example, leaves use sunlight."},
+        )
+
+        self.assertGreaterEqual(result["total_score"], 6.0)
+        self.assertLessEqual(result["total_score"], 10.0)
+        self.assertIn("relevant", result["score_breakdown"][0]["feedback"].lower())

@@ -43,9 +43,8 @@ class CourseAnalyticsView(APIView):
         
         # Frequently asked topics (using analytics service)
         try:
-            analytics_service = CourseAnalyticsService(course)
-            frequently_asked = analytics_service.get_frequently_asked_topics(limit=5)
-            student_struggles = analytics_service.get_student_struggle_areas(limit=5)
+            frequently_asked = CourseAnalyticsService.get_frequently_asked_topics(course_id=course.id)[:5]
+            student_struggles = []  # struggle areas requires a student_id, skip for course-level view
         except Exception:
             frequently_asked = []
             student_struggles = []
@@ -104,7 +103,7 @@ class StudentAnalyticsView(APIView):
             student = get_object_or_404(User, id=student_id)
             has_access = False
             for course in Course.objects.filter(teacher=request.user):
-                if student in course.students.all():
+                if course.enrollments.filter(student=student).exists():
                     has_access = True
                     break
             
@@ -140,9 +139,18 @@ class StudentAnalyticsView(APIView):
         
         # Get personalized recommendations
         try:
-            recommendation_service = StudentRecommendationService(student)
-            recommended_topics = recommendation_service.get_recommended_review_topics(limit=5)
-            personalized_assignments = recommendation_service.get_personalized_assignments(limit=5)
+            # Find courses this student is associated with
+            from apps.courses.models import Course
+            student_courses = Course.objects.filter(
+                chat_messages__student=student
+            ).distinct()[:1]
+            if student_courses:
+                course_id = student_courses[0].id
+                recommended_topics = StudentRecommendationService.get_recommended_review_topics(course_id, student.id)[:5]
+                personalized_assignments = StudentRecommendationService.get_personalized_assignments(course_id, student.id)[:5]
+            else:
+                recommended_topics = []
+                personalized_assignments = []
         except Exception:
             recommended_topics = []
             personalized_assignments = []
@@ -254,3 +262,27 @@ class TopicAnalyticsView(APIView):
             })
         
         return Response({"topics": topics})
+
+
+class ErrorLogView(APIView):
+    """
+    Endpoint for frontend error reporting.
+    Accepts error details from the ErrorBoundary and logs them.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        error_data = request.data
+        correlation_id = error_data.get('correlationId', 'unknown')
+        message = error_data.get('message', 'No message')
+        stack = error_data.get('stack', 'No stack trace')
+        url = error_data.get('url', 'Unknown URL')
+        
+        logger.error(
+            f"FRONTEND_ERROR [{correlation_id}] on {url}: {message}\n"
+            f"Stack: {stack[:1000]}..."
+        )
+        
+        # In production, this might also send to Sentry or a database
+        # For now, we just log it and return success
+        return Response({"status": "received", "id": correlation_id}, status=status.HTTP_201_CREATED)
