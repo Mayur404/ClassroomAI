@@ -43,8 +43,8 @@ class ChatFallbackTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("exact answer text", response.data["answer_text"].lower())
         self.assertIn("Recursion solves a problem", response.data["answer_text"])
+        self.assertIn("Source: Recursion Notes page 1.", response.data["answer_text"])
         self.assertGreaterEqual(len(response.data["sources"]), 1)
 
     @mock.patch("apps.ai_service.services.call_ollama")
@@ -56,9 +56,27 @@ class ChatFallbackTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("exact answer text", response.data["answer_text"].lower())
         self.assertIn(
             "Recursion solves a problem by reducing it to smaller versions of the same problem.",
             response.data["answer_text"],
         )
         mock_call_ollama.assert_not_called()
+
+    @mock.patch("apps.ai_service.services.call_ollama", return_value="Recursion breaks a problem into smaller versions of the same problem.")
+    def test_chat_reuses_cached_answer_for_repeated_explanatory_question(self, mock_call_ollama):
+        first = self.client.post(
+            reverse("chat-ask", args=[self.course.id]),
+            {"message": "Explain why recursion is useful."},
+            format="json",
+        )
+        second = self.client.post(
+            reverse("chat-ask", args=[self.course.id]),
+            {"message": "Explain why recursion is useful."},
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["answer_text"], second.data["answer_text"])
+        mock_call_ollama.assert_called_once()
+

@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from collections import OrderedDict
+from difflib import SequenceMatcher
 
 import chromadb
 import pdfplumber
@@ -22,6 +23,7 @@ os.makedirs(CHROMA_DIR, exist_ok=True)
 _client = chromadb.PersistentClient(path=CHROMA_DIR)
 _embed_session = requests.Session()
 _query_cache = OrderedDict()
+_answer_cache = OrderedDict()
 PDF_CHAT_STOPWORDS = {
     "a",
     "an",
@@ -61,6 +63,16 @@ PDF_CHAT_STOPWORDS = {
     "why",
     "with",
 }
+PDF_CHAT_CONTRAST_PAIRS = (
+    ("before", "after", 0.34),
+    ("after", "before", 0.34),
+    ("hero", "heroine", 0.42),
+    ("heroine", "hero", 0.42),
+    ("male", "female", 0.26),
+    ("female", "male", 0.26),
+    ("first", "second", 0.18),
+    ("second", "first", 0.18),
+)
 
 
 def _normalize_words(text: str) -> list[str]:
@@ -207,6 +219,30 @@ def _cache_get(key):
     return value
 
 
+def _answer_cache_set(key, value, limit: int = 256):
+    _answer_cache[key] = value
+    _answer_cache.move_to_end(key)
+    while len(_answer_cache) > limit:
+        _answer_cache.popitem(last=False)
+
+
+def _answer_cache_get(key):
+    value = _answer_cache.get(key)
+    if value is not None:
+        _answer_cache.move_to_end(key)
+    return value
+
+
+def _invalidate_course_caches(course_id: int) -> None:
+    stale_query_keys = [key for key in _query_cache if key[0] == int(course_id)]
+    for key in stale_query_keys:
+        _query_cache.pop(key, None)
+
+    stale_answer_keys = [key for key in _answer_cache if key[0] == int(course_id)]
+    for key in stale_answer_keys:
+        _answer_cache.pop(key, None)
+
+
 def index_material_for_pdf_chat(material) -> dict:
     """Index a course material as page-aware PDF chunks for strict chat retrieval."""
     course_id = material.course_id
@@ -260,9 +296,7 @@ def index_material_for_pdf_chat(material) -> dict:
 
     collection.add(ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas)
 
-    stale_keys = [key for key in _query_cache if key[0] == int(course_id)]
-    for key in stale_keys:
-        _query_cache.pop(key, None)
+    _invalidate_course_caches(course_id)
 
     return {
         "status": "SUCCESS",
@@ -276,9 +310,7 @@ def index_material_for_pdf_chat(material) -> dict:
 def delete_material_pdf_chat_chunks(course_id: int, material_id: int) -> None:
     collection = _collection()
     collection.delete(where={"material_id": int(material_id)})
-    stale_keys = [key for key in _query_cache if key[0] == int(course_id)]
-    for key in stale_keys:
-        _query_cache.pop(key, None)
+    _invalidate_course_caches(course_id)
 
 
 def retrieve_pdf_chunks(course_id: int, question: str, top_k: int = 5) -> list[dict]:
@@ -360,6 +392,198 @@ def retrieve_pdf_chunks(course_id: int, question: str, top_k: int = 5) -> list[d
 
     _cache_set(cache_key, retrieved)
     return retrieved
+
+
+def _normalized_chat_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _question_bigrams(question: str) -> set[tuple[str, str]]:
+    terms = _question_terms(question)
+    return {(terms[index], terms[index + 1]) for index in range(len(terms) - 1)}
+
+
+def _contrast_penalty(question_terms: set[str], candidate_terms: set[str]) -> float:
+    penalty = 0.0
+    for expected, conflicting, weight in PDF_CHAT_CONTRAST_PAIRS:
+        if expected in question_terms and conflicting in candidate_terms and expected not in candidate_terms:
+            penalty += weight
+    return penalty
+
+
+def _score_text_alignment(question: str, candidate_text: str, *, base_score: float = 0.0) -> float:
+    normalized_question = _normalized_chat_text(question)
+    normalized_candidate = _normalized_chat_text(candidate_text)
+    if not normalized_question or not normalized_candidate:
+        return 0.0
+
+    question_terms = set(_question_terms(question))
+    candidate_terms = set(_question_terms(candidate_text))
+    if not question_terms or not candidate_terms:
+        return 0.0
+
+    overlap = len(question_terms.intersection(candidate_terms))
+    if overlap == 0:
+        return 0.0
+
+    token_recall = overlap / max(len(question_terms), 1)
+    token_precision = overlap / max(len(candidate_terms), 1)
+
+    question_bigrams = _question_bigrams(question)
+    candidate_bigrams = _question_bigrams(candidate_text)
+    bigram_overlap = 0.0
+    if question_bigrams and candidate_bigrams:
+        bigram_overlap = len(question_bigrams.intersection(candidate_bigrams)) / max(len(question_bigrams), 1)
+
+    ratio = SequenceMatcher(None, normalized_question, normalized_candidate).ratio()
+
+    score = (token_recall * 0.52) + (token_precision * 0.1) + (bigram_overlap * 0.23) + (ratio * 0.15)
+    if normalized_question == normalized_candidate:
+        score += 0.28
+    elif normalized_question in normalized_candidate or normalized_candidate in normalized_question:
+        score += 0.12
+
+    score += min(max(float(base_score), 0.0), 1.0) * 0.08
+    score -= _contrast_penalty(question_terms, candidate_terms)
+    return round(max(score, 0.0), 4)
+
+
+def _clean_structured_answer(answer_text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (answer_text or "")).strip(" .")
+    cleaned = re.split(
+        r"\s+(?:Q(?:uestion)?|A(?:nswer)?)\s*[:\)\.\-]",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" .")
+    return cleaned
+
+
+def _extract_inline_qa_pairs(text: str) -> list[tuple[str, str]]:
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    if not normalized:
+        return []
+
+    pattern = re.compile(
+        r"(?:^|\s)(?:Q|Question)\s*[:\)\.\-]\s*(?P<question>.+?)\s+"
+        r"(?:A|Answer)\s*[:\)\.\-]\s*(?P<answer>.+?)(?=(?:\s+(?:Q|Question)\s*[:\)\.\-])|$)",
+        flags=re.IGNORECASE,
+    )
+
+    pairs = []
+    seen = set()
+    for match in pattern.finditer(normalized):
+        prompt = re.sub(r"\s+", " ", (match.group("question") or "")).strip(" .")
+        answer = _clean_structured_answer(match.group("answer") or "")
+        if not prompt or not answer:
+            continue
+        key = (prompt.lower(), answer.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((prompt, answer))
+    return pairs
+
+
+def _extract_label_value_pairs(text: str) -> list[tuple[str, str]]:
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    if not normalized:
+        return []
+
+    pattern = re.compile(
+        r"(?P<label>[A-Z][A-Za-z][A-Za-z\s]{0,30}?)\s*:\s*(?P<value>.+?)(?=(?:\s+[A-Z][A-Za-z][A-Za-z\s]{0,30}?\s*:)|$)"
+    )
+
+    pairs = []
+    seen = set()
+    for match in pattern.finditer(normalized):
+        label = re.sub(r"\s+", " ", (match.group("label") or "")).strip(" .:-")
+        value = _clean_structured_answer(match.group("value") or "")
+        if not label or not value:
+            continue
+        if len(label.split()) > 4 or len(value.split()) > 18:
+            continue
+        key = (label.lower(), value.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((label, value))
+    return pairs
+
+
+def _best_structured_matches(question: str, retrieved_chunks: list[dict], limit: int = 3) -> list[dict]:
+    candidates = []
+    seen = set()
+
+    for chunk in retrieved_chunks:
+        chunk_text = chunk.get("text") or ""
+        base_score = float(chunk.get("score") or 0.0)
+
+        for prompt_text, answer_text in _extract_inline_qa_pairs(chunk_text):
+            prompt_score = _score_text_alignment(question, prompt_text, base_score=base_score)
+            answer_score = _score_text_alignment(question, answer_text, base_score=base_score)
+            combined_score = max(prompt_score, answer_score * 0.7, min(prompt_score + (answer_score * 0.18), 1.4))
+            if combined_score <= 0:
+                continue
+
+            key = (prompt_text.lower(), answer_text.lower(), chunk["doc_name"], int(chunk["page_number"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                {
+                    "kind": "qa",
+                    "score": round(combined_score, 4),
+                    "question_text": prompt_text,
+                    "answer_text": answer_text,
+                    "evidence_text": f"Q: {prompt_text} A: {answer_text}",
+                    "doc_name": chunk["doc_name"],
+                    "page_number": chunk["page_number"],
+                }
+            )
+
+        for label, value in _extract_label_value_pairs(chunk_text):
+            label_prompt = f"What is the {label}?"
+            score = max(
+                _score_text_alignment(question, label_prompt, base_score=base_score),
+                _score_text_alignment(question, f"{label} {value}", base_score=base_score) * 0.9,
+            )
+            if score <= 0:
+                continue
+
+            key = (label.lower(), value.lower(), chunk["doc_name"], int(chunk["page_number"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                {
+                    "kind": "label",
+                    "score": round(score, 4),
+                    "question_text": label_prompt,
+                    "answer_text": value,
+                    "evidence_text": f"{label}: {value}",
+                    "doc_name": chunk["doc_name"],
+                    "page_number": chunk["page_number"],
+                }
+            )
+
+    candidates.sort(key=lambda item: (item["score"], len(item["answer_text"])), reverse=True)
+    return candidates[:limit]
+
+
+def _is_confident_structured_match(matches: list[dict]) -> bool:
+    if not matches:
+        return False
+    lead_score = matches[0]["score"]
+    runner_up = matches[1]["score"] if len(matches) > 1 else 0.0
+    return lead_score >= 0.62 or (lead_score >= 0.48 and (lead_score - runner_up) >= 0.12)
+
+
+def _format_structured_answer(answer_text: str, doc_name: str, page_number: int) -> str:
+    cleaned = _clean_structured_answer(answer_text)
+    if cleaned and cleaned[-1] not in ".!?":
+        cleaned += "."
+    return f"{cleaned}\n\nSource: {doc_name} page {page_number}."
 
 
 def _format_citations(retrieved_chunks: list[dict]) -> list[dict]:
@@ -520,51 +744,93 @@ def _format_grounded_answer(question: str, passages: list[dict]) -> str:
     )
 
 
-def _extract_fact_from_chunks(question: str, retrieved_chunks: list[dict]) -> str:
-    """Return a deterministic grounded answer for simple fact queries when possible."""
-    def _clean_fact_value(value: str) -> str:
-        cleaned = re.sub(r"\s+", " ", (value or "")).strip(" .")
-        # Trim common worksheet carry-over like "Q)" after a name.
-        cleaned = re.split(r"\s+Q\)|\s+Q\b", cleaned, maxsplit=1, flags=re.IGNORECASE)[0].strip(" .")
-        return cleaned
+def _concise_sentence(text: str, max_words: int = 28) -> str:
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    if not normalized:
+        return ""
+    words = normalized.split()
+    if len(words) <= max_words:
+        return normalized
+    shortened = " ".join(words[:max_words]).rstrip(" ,;:")
+    if not shortened.endswith((".", "!", "?")):
+        shortened += "..."
+    return shortened
 
-    q = (question or "").lower()
-    fact_key = None
-    patterns = [
-        ("heroine", [r"\bheroine\b", r"\bfemale lead\b"]),
-        ("hero", [r"\bhero\b", r"\bmale lead\b"]),
-        ("director", [r"\bdirector\b"]),
-    ]
-    for key, pats in patterns:
-        if any(re.search(pat, q) for pat in pats):
-            fact_key = key
+
+def _needs_llm_synthesis(question: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (question or "").strip().lower())
+    synthesis_markers = (
+        "why ",
+        "how ",
+        "compare",
+        "difference",
+        "advantages",
+        "disadvantages",
+        "steps",
+        "process",
+        "summarize",
+        "briefly explain",
+        "explain why",
+        "explain how",
+        "relationship",
+        "impact",
+    )
+    return any(marker in normalized for marker in synthesis_markers)
+
+
+def _format_fast_concise_answer(question: str, passages: list[dict]) -> str:
+    if not passages:
+        return "I could not find relevant information in this classroom's uploaded PDFs."
+
+    lead = passages[0]
+    lead_text = _concise_sentence(lead["text"], max_words=32)
+    if _looks_like_direct_lookup(question):
+        return (
+            "Here is the exact answer text I found in your PDF:\n\n"
+            f"> {lead_text}\n\n"
+            f"Source: {lead['doc_name']} page {lead['page_number']}."
+        )
+
+    support_lines = []
+    for item in passages[1:]:
+        if item["score"] < max(lead["score"] * 0.6, 0.2):
+            continue
+        support_lines.append(_concise_sentence(item["text"], max_words=20))
+        if len(support_lines) >= 2:
             break
 
-    if not fact_key:
-        return ""
+    if not support_lines:
+        return f"{lead_text}\n\nSource: {lead['doc_name']} page {lead['page_number']}."
 
-    for item in retrieved_chunks:
-        text = (item.get("text") or "").replace("\n", " ")
+    return (
+        f"{lead_text}\n\n"
+        + "Key point: "
+        + " ".join(support_lines)
+        + f"\n\nSource: {lead['doc_name']} page {lead['page_number']}."
+    )
 
-        # Pattern 1: "Heroine: Deepika Padukone"
-        direct = re.search(rf"\b{re.escape(fact_key)}\b\s*[:\-]\s*([A-Za-z][A-Za-z\s\.']{{1,80}})", text, flags=re.IGNORECASE)
-        if direct:
-            value = _clean_fact_value(direct.group(1))
-            if value:
-                return value
 
-        # Pattern 2: "Who is the heroine? A) Deepika Padukone"
-        qa = re.search(
-            rf"who\s+is\s+the\s+{re.escape(fact_key)}\b.*?\bA\)\s*([A-Za-z][A-Za-z\s\.']{{1,80}})",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if qa:
-            value = _clean_fact_value(qa.group(1))
-            if value:
-                return value
+def _prompt_evidence_block(passages: list[dict], limit: int = 2) -> str:
+    selected = passages[:limit]
+    return "\n\n".join(
+        f"[Evidence {index}] {item['doc_name']} p.{item['page_number']}: {item.get('evidence_text') or item.get('text') or item.get('answer_text') or ''}"
+        for index, item in enumerate(selected, start=1)
+    )
 
-    return ""
+
+def _finalize_llm_answer(answer_text: str, fallback_passages: list[dict]) -> str:
+    cleaned = re.sub(r"\s+\n", "\n", (answer_text or "").strip())
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    if not cleaned:
+        return _format_fast_concise_answer("", fallback_passages)
+
+    words = cleaned.split()
+    if len(words) > 120:
+        cleaned = " ".join(words[:120]).rstrip(" ,;:")
+        if not cleaned.endswith((".", "!", "?")):
+            cleaned += "..."
+
+    return cleaned
 
 
 def _identity_query_subject(question: str) -> str:
@@ -581,60 +847,39 @@ def _movie_entity_fallback(question: str, retrieved_chunks: list[dict]) -> str:
 
 
 def answer_pdf_chat_question(course, question: str, user=None, top_k: int = 5) -> dict:
-    retrieved_chunks = retrieve_pdf_chunks(course.id, question, top_k=top_k)
-    if not retrieved_chunks:
+    normalized_question = re.sub(r"\s+", " ", (question or "").strip())
+    if not normalized_question:
         return {
-            "answer_text": "I could not find relevant information in this classroom's uploaded PDFs.",
+            "answer_text": "Question cannot be empty.",
             "sources": [],
         }
 
-    best_passages = _best_passages(question, retrieved_chunks, limit=3)
+    answer_cache_key = (int(course.id), normalized_question.lower(), int(top_k))
+    cached_answer = _answer_cache_get(answer_cache_key)
+    if cached_answer is not None:
+        return cached_answer
 
-    identity_subject = _identity_query_subject(question)
+    retrieved_chunks = retrieve_pdf_chunks(course.id, question, top_k=int(top_k))
+    if not retrieved_chunks:
+        result = {
+            "answer_text": "I could not find relevant information in this classroom's uploaded PDFs.",
+            "sources": [],
+        }
+        _answer_cache_set(answer_cache_key, result)
+        return result
 
     context_block = "\n\n".join(
         [
-            f"[Source {idx + 1} | {item['doc_name']} | Page {item['page_number']}]\n{item['text']}"
+            f"[Source {idx + 1}] {item['doc_name']} (page {item['page_number']})\n{item['text']}"
             for idx, item in enumerate(retrieved_chunks)
         ]
     )
 
-    # Prefer deterministic extraction for simple factual queries.
-    extracted_fact = _extract_fact_from_chunks(question, retrieved_chunks)
-    if extracted_fact:
-        return {
-            "answer_text": f"According to the uploaded PDF, the answer is: {extracted_fact}.",
-            "sources": _format_citations(retrieved_chunks),
-        }
-
-    if best_passages and (_looks_like_direct_lookup(question) or best_passages[0]["score"] >= 0.82):
-        return {
-            "answer_text": _format_grounded_answer(question, best_passages),
-            "sources": _format_citations(retrieved_chunks),
-        }
-
-    # For identity questions, keep the evidence visible but let the model answer naturally.
-    # If the model is unavailable, we will return a clean PDF-grounded not-found response.
-
-    chat_context = ""
-    if user is not None:
-        recent_messages = ChatMessage.objects.filter(course=course, student=user).order_by("-timestamp")[:4]
-        if recent_messages:
-            lines = []
-            for message in reversed(recent_messages):
-                if message.message:
-                    lines.append(f"Student: {message.message[:240]}")
-            chat_context = "\n".join(lines)
-
     prompt = (
-        "You are a classroom tutor. Use only the provided PDF evidence. "
-        "If evidence is insufficient, state that clearly. "
-        "Do not use outside knowledge. Include inline references like [Source 1].\n\n"
-        f"Classroom: {course.name}\n"
-        f"Recent Chat Context:\n{chat_context or 'None'}\n\n"
-        f"Evidence:\n{context_block}\n\n"
+        "Answer only from the provided course material. Do not answer from general knowledge.\n\n"
+        f"Course material context:\n{context_block}\n\n"
         f"Question: {question}\n\n"
-        "Answer:"
+        "If the answer is not in the provided context, say that the material does not contain it."
     )
 
     from apps.ai_service.services import call_ollama
@@ -644,31 +889,28 @@ def answer_pdf_chat_question(course, question: str, user=None, top_k: int = 5) -
             prompt,
             format_json=False,
             model=getattr(settings, "GROQ_MODEL_PRIMARY", "llama-3.3-70b-versatile"),
-            temperature=0.1,
-            num_predict=min(getattr(settings, "GROQ_CHAT_MAX_TOKENS", 800), 1200),
+            temperature=0.2,
+            num_predict=min(getattr(settings, "GROQ_CHAT_MAX_TOKENS", 800), 800),
         )
     except Exception as exc:
         logger.warning("Groq answer generation failed for course %s: %s", course.id, exc)
         answer_text = ""
 
     if not (answer_text or "").strip():
-        if best_passages:
-            answer_text = _format_grounded_answer(question, best_passages)
-        elif identity_subject:
-            answer_text = f"I couldn't find a direct answer about {identity_subject} in the uploaded PDF."
+        excerpts = []
+        for item in retrieved_chunks[:3]:
+            snippet = (item.get("text") or "").strip()
+            if not snippet:
+                continue
+            excerpts.append(f"[{item['doc_name']} p.{item['page_number']}] {snippet[:260]}")
+        if excerpts:
+            answer_text = "I could not generate a full model answer right now. Here are the most relevant excerpts from your uploaded PDFs:\n\n" + "\n\n".join(excerpts)
         else:
-            excerpts = []
-            for item in retrieved_chunks[:3]:
-                snippet = (item.get("text") or "").strip()
-                if not snippet:
-                    continue
-                excerpts.append(f"[{item['doc_name']} p.{item['page_number']}] {snippet[:260]}")
-            if excerpts:
-                answer_text = "I could not generate a full model answer right now. Here are the most relevant excerpts from your uploaded PDFs:\n\n" + "\n\n".join(excerpts)
-            else:
-                answer_text = "I could not generate an answer from the provided PDFs right now."
+            answer_text = "I could not generate an answer from the provided PDFs right now."
 
-    return {
+    result = {
         "answer_text": (answer_text or "").strip() or "I could not generate an answer from the provided PDFs.",
         "sources": _format_citations(retrieved_chunks),
     }
+    _answer_cache_set(answer_cache_key, result)
+    return result
