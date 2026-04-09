@@ -551,18 +551,18 @@ class SarvamTranslateView(APIView):
             return Response({"detail": "text is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         payload = {
-            "input": [text],
+            "input": text,
             "source_language_code": "en-IN",
             "target_language_code": target_language_code,
             "speaker_gender": "Female",
             "mode": "formal",
-            "model": "mayura:v1",
-            "enable_preprocessing": True,
+            "model": "sarvam-translate:v1",
+            "enable_preprocessing": False,
         }
         headers = {"api-subscription-key": api_key, "Content-Type": "application/json"}
         response = requests.post("https://api.sarvam.ai/translate", json=payload, headers=headers, timeout=45)
         response.raise_for_status()
         data = response.json()
-        translated = (data.get("translated_text") or [text])[0]
+        translated = data.get("translated_text") or text
         return Response({"translated_text": translated, "target_language_code": target_language_code})
 

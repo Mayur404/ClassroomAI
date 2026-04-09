@@ -1,6 +1,7 @@
 import logging
 import base64
 import re
+from typing import Any
 
 import requests
 from django.conf import settings
@@ -18,6 +19,46 @@ _LANGUAGE_SCRIPT_HINTS = [
     ("gu-IN", re.compile(r"[\u0A80-\u0AFF]")),
 ]
 
+_LANGUAGE_CODE_ALIASES = {
+    "en": "en-IN",
+    "en-in": "en-IN",
+    "en_us": "en-IN",
+    "en-us": "en-IN",
+    "english": "en-IN",
+    "hi": "hi-IN",
+    "hi-in": "hi-IN",
+    "hindi": "hi-IN",
+    "ta": "ta-IN",
+    "ta-in": "ta-IN",
+    "tamil": "ta-IN",
+    "te": "te-IN",
+    "te-in": "te-IN",
+    "telugu": "te-IN",
+    "kn": "kn-IN",
+    "kn-in": "kn-IN",
+    "kannada": "kn-IN",
+    "ml": "ml-IN",
+    "ml-in": "ml-IN",
+    "malayalam": "ml-IN",
+    "bn": "bn-IN",
+    "bn-in": "bn-IN",
+    "bengali": "bn-IN",
+    "gu": "gu-IN",
+    "gu-in": "gu-IN",
+    "gujarati": "gu-IN",
+}
+
+_LANGUAGE_NAMES = {
+    "en-IN": "English",
+    "hi-IN": "Hindi",
+    "ta-IN": "Tamil",
+    "te-IN": "Telugu",
+    "kn-IN": "Kannada",
+    "ml-IN": "Malayalam",
+    "bn-IN": "Bengali",
+    "gu-IN": "Gujarati",
+}
+
 
 def normalize_language_code(language_code: str | None, fallback: str = "en-IN") -> str:
     raw = (language_code or "").strip()
@@ -26,7 +67,7 @@ def normalize_language_code(language_code: str | None, fallback: str = "en-IN") 
     lowered = raw.lower()
     if lowered in {"auto", "unknown"}:
         return "unknown"
-    return raw
+    return _LANGUAGE_CODE_ALIASES.get(lowered, raw)
 
 
 def detect_language_from_text(text: str, default: str = "en-IN") -> str:
@@ -38,6 +79,79 @@ def detect_language_from_text(text: str, default: str = "en-IN") -> str:
         if pattern.search(sample):
             return code
     return default
+
+
+def _translation_chunks(text: str, max_chars: int = 1800) -> list[str]:
+    normalized = (text or "").strip()
+    if not normalized:
+        return []
+    if len(normalized) <= max_chars:
+        return [normalized]
+
+    pieces = re.split(r"(?<=[.!?])\s+|\n{2,}", normalized)
+    chunks: list[str] = []
+    current = ""
+
+    for piece in pieces:
+        part = (piece or "").strip()
+        if not part:
+            continue
+        candidate = f"{current} {part}".strip() if current else part
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            current = ""
+        while len(part) > max_chars:
+            chunks.append(part[:max_chars].strip())
+            part = part[max_chars:].strip()
+        if part:
+            current = part
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _extract_translated_text(payload: dict[str, Any], default: str) -> str:
+    translated = payload.get("translated_text")
+    if isinstance(translated, str) and translated.strip():
+        return translated.strip()
+    if isinstance(translated, list) and translated:
+        first = translated[0]
+        if isinstance(first, str) and first.strip():
+            return first.strip()
+    return default
+
+
+def _language_name(language_code: str) -> str:
+    normalized = normalize_language_code(language_code, fallback=language_code or "English")
+    return _LANGUAGE_NAMES.get(normalized, normalized)
+
+
+def _translate_with_groq(text: str, source_language_code: str, target_language_code: str) -> str:
+    try:
+        from apps.ai_service.services import call_ollama
+
+        source_name = _language_name(source_language_code)
+        target_name = _language_name(target_language_code)
+        prompt = (
+            f"Translate the following text from {source_name} to {target_name}. "
+            "Preserve meaning, citations, filenames, page numbers, bullets, and line breaks. "
+            "Return only the translated text.\n\n"
+            f"Text:\n{text}"
+        )
+        translated = (call_ollama(prompt, format_json=False, temperature=0.1) or "").strip()
+        return translated or text
+    except Exception as exc:
+        logger.warning(
+            "Groq translation fallback failed (%s -> %s): %s",
+            source_language_code,
+            target_language_code,
+            exc,
+        )
+        return text
 
 
 def translate_text_with_sarvam_meta(
@@ -72,47 +186,50 @@ def translate_text_with_sarvam_meta(
 
     api_key = getattr(settings, "SARVAM_API_KEY", "")
     if not api_key:
+        translated = _translate_with_groq(normalized, normalized_source, normalized_target)
         return {
-            "translated_text": normalized,
+            "translated_text": translated,
             "source_language_code": normalized_source,
             "target_language_code": normalized_target,
-            "used_translation": False,
+            "used_translation": translated != normalized,
         }
 
-    payload = {
-        "input": [normalized],
-        "source_language_code": normalized_source,
-        "target_language_code": normalized_target,
-        "speaker_gender": "Female",
-        "mode": "formal",
-        "model": "mayura:v1",
-        "enable_preprocessing": True,
-    }
     headers = {
         "api-subscription-key": api_key,
         "Content-Type": "application/json",
     }
+    translate_model = getattr(settings, "SARVAM_TRANSLATE_MODEL", "sarvam-translate:v1")
+    translated_chunks: list[str] = []
+    used_translation = False
 
-    try:
-        response = requests.post("https://api.sarvam.ai/translate", json=payload, headers=headers, timeout=45)
-        response.raise_for_status()
-        data = response.json() or {}
-        translated = (data.get("translated_text") or [normalized])[0] or normalized
-        detected_source = data.get("source_language_code") or normalized_source
-        return {
-            "translated_text": translated,
-            "source_language_code": detected_source,
-            "target_language_code": normalized_target,
-            "used_translation": True,
-        }
-    except Exception as exc:
-        logger.warning("Sarvam translation failed (%s -> %s): %s", normalized_source, normalized_target, exc)
-        return {
-            "translated_text": normalized,
+    for chunk in _translation_chunks(normalized):
+        payload = {
+            "input": chunk,
             "source_language_code": normalized_source,
             "target_language_code": normalized_target,
-            "used_translation": False,
+            "speaker_gender": "Female",
+            "mode": "formal",
+            "model": translate_model,
+            "enable_preprocessing": False,
         }
+        try:
+            response = requests.post("https://api.sarvam.ai/translate", json=payload, headers=headers, timeout=45)
+            response.raise_for_status()
+            data = response.json() or {}
+            translated_chunks.append(_extract_translated_text(data, chunk))
+            used_translation = True
+        except Exception as exc:
+            logger.warning("Sarvam translation failed (%s -> %s): %s", normalized_source, normalized_target, exc)
+            translated_chunks.append(_translate_with_groq(chunk, normalized_source, normalized_target))
+            used_translation = used_translation or (translated_chunks[-1] != chunk)
+
+    translated = "\n\n".join(part for part in translated_chunks if part.strip()).strip() or normalized
+    return {
+        "translated_text": translated,
+        "source_language_code": normalized_source,
+        "target_language_code": normalized_target,
+        "used_translation": used_translation,
+    }
 
 
 def translate_text_with_sarvam(text: str, source_language_code: str = "en-IN", target_language_code: str = "en-IN") -> str:

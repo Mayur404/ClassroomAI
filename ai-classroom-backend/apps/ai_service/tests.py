@@ -2,9 +2,11 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
+import requests
 
 from apps.ai_service.rag_service import _hybrid_rank_results, _search_result_cache, search_course
+from apps.ai_service.language_service import normalize_language_code, translate_text_with_sarvam_meta
 from apps.ai_service.services import (
     _fallback_grading,
     _group_ocr_detections,
@@ -12,6 +14,7 @@ from apps.ai_service.services import (
     _should_run_ocr,
     grade_submission,
 )
+from apps.ai_service.voice_chat_service import SpeechService, SpeechTranscript, VoiceChatService
 
 
 class PdfEnhancementHelpersTests(SimpleTestCase):
@@ -146,3 +149,100 @@ class EssayGradingTests(SimpleTestCase):
         self.assertGreaterEqual(result["total_score"], 6.0)
         self.assertLessEqual(result["total_score"], 10.0)
         self.assertIn("relevant", result["score_breakdown"][0]["feedback"].lower())
+
+
+class VoiceChatServiceTests(SimpleTestCase):
+    def test_normalize_language_code_maps_common_aliases(self):
+        self.assertEqual(normalize_language_code("hi"), "hi-IN")
+        self.assertEqual(normalize_language_code("Hindi"), "hi-IN")
+        self.assertEqual(normalize_language_code("ta"), "ta-IN")
+        self.assertEqual(normalize_language_code("english"), "en-IN")
+
+    @override_settings(SARVAM_API_KEY="x" * 32)
+    @mock.patch("apps.ai_service.language_service.requests.post")
+    def test_translate_uses_string_payload_and_string_response(self, mock_post):
+        mock_response = mock.Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "translated_text": "\u092f\u0939 \u090f\u0915 \u0909\u0924\u094d\u0924\u0930 \u0939\u0948\u0964",
+            "source_language_code": "en-IN",
+        }
+        mock_post.return_value = mock_response
+
+        result = translate_text_with_sarvam_meta(
+            "This is an answer.",
+            source_language_code="en-IN",
+            target_language_code="hi-IN",
+        )
+
+        self.assertEqual(result["translated_text"], "\u092f\u0939 \u090f\u0915 \u0909\u0924\u094d\u0924\u0930 \u0939\u0948\u0964")
+        self.assertTrue(result["used_translation"])
+        self.assertEqual(mock_post.call_args.kwargs["json"]["input"], "This is an answer.")
+
+    @override_settings(SARVAM_API_KEY="x" * 32)
+    @mock.patch("apps.ai_service.services.call_ollama", return_value="\u092f\u0939 \u0917\u094d\u0930\u094b\u0915 \u0905\u0928\u0941\u0935\u093e\u0926 \u0939\u0948\u0964")
+    @mock.patch("apps.ai_service.language_service.requests.post")
+    def test_translate_falls_back_to_groq_when_sarvam_rejects_request(self, mock_post, _mock_call_ollama):
+        mock_response = mock.Mock()
+        mock_response.raise_for_status.side_effect = requests.HTTPError("400 Client Error")
+        mock_post.return_value = mock_response
+
+        result = translate_text_with_sarvam_meta(
+            "This is an answer.",
+            source_language_code="en-IN",
+            target_language_code="hi-IN",
+        )
+
+        self.assertEqual(result["translated_text"], "\u092f\u0939 \u0917\u094d\u0930\u094b\u0915 \u0905\u0928\u0941\u0935\u093e\u0926 \u0939\u0948\u0964")
+        self.assertTrue(result["used_translation"])
+
+    @override_settings(SARVAM_API_KEY="x" * 32)
+    @mock.patch("apps.ai_service.voice_chat_service.requests.post")
+    def test_tts_accepts_audio_list_with_base64_string(self, mock_post):
+        mock_response = mock.Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "audios": ["ZmFrZUF1ZGlv"],
+        }
+        mock_post.return_value = mock_response
+
+        audio = SpeechService().text_to_speech_with_sarvam(
+            text="Hello world",
+            target_language_code="en-IN",
+            speaker="shubh",
+            model="bulbul:v3",
+            output_audio_codec="wav",
+        )
+
+        self.assertEqual(audio.audio_base64, "ZmFrZUF1ZGlv")
+        self.assertEqual(audio.mime_type, "audio/wav")
+
+    @mock.patch("apps.ai_service.voice_chat_service.translate_text_with_sarvam_meta")
+    @mock.patch("apps.ai_service.voice_chat_service.answer_pdf_chat_question")
+    def test_voice_answer_uses_spoken_language_for_tts(self, mock_answer_pdf_chat_question, mock_translate):
+        service = VoiceChatService()
+        service.speech = mock.Mock()
+        service.speech.transcribe_with_sarvam.side_effect = [
+            SpeechTranscript(transcript="\u0928\u092e\u0938\u094d\u0924\u0947", language_code="hi"),
+            SpeechTranscript(transcript="hello", language_code="en-IN"),
+        ]
+        service.speech.text_to_speech_with_sarvam.return_value = mock.Mock(
+            audio_base64="ZmFrZQ==",
+            mime_type="audio/wav",
+        )
+        mock_answer_pdf_chat_question.return_value = {
+            "answer_text": "This is the answer.",
+            "sources": [],
+        }
+        mock_translate.return_value = {
+            "translated_text": "\u092f\u0939 \u0909\u0924\u094d\u0924\u0930 \u0939\u0948\u0964",
+            "target_language_code": "hi-IN",
+            "used_translation": True,
+        }
+
+        result = service.answer_voice_question(course=mock.Mock(id=22), user=mock.Mock(id=1), audio_file=mock.Mock())
+
+        self.assertEqual(result["detected_language_code"], "hi-IN")
+        self.assertEqual(result["answer_language_code"], "hi-IN")
+        service.speech.text_to_speech_with_sarvam.assert_called_once()
+        self.assertEqual(service.speech.text_to_speech_with_sarvam.call_args.kwargs["target_language_code"], "hi-IN")

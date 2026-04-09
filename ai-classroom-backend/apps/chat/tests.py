@@ -1,6 +1,7 @@
 from unittest import mock
 
 from django.urls import reverse
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
@@ -80,3 +81,45 @@ class ChatFallbackTests(APITestCase):
         self.assertEqual(first.data["answer_text"], second.data["answer_text"])
         mock_call_ollama.assert_called_once()
 
+
+class VoiceChatAccessTests(APITestCase):
+    def setUp(self):
+        self.teacher = User.objects.create_user(
+            email="voice-teacher@example.com",
+            password="testpass123",
+            name="Voice Teacher",
+            role=UserRole.TEACHER,
+        )
+        self.student = User.objects.create_user(
+            email="voice-student@example.com",
+            password="testpass123",
+            name="Voice Student",
+            role=UserRole.STUDENT,
+        )
+        self.course = Course.objects.create(teacher=self.teacher, name="Spoken AI")
+        Enrollment.objects.create(course=self.course, student=self.student)
+        self.teacher_token = Token.objects.create(user=self.teacher)
+
+    @mock.patch("apps.chat.views.VoiceChatService")
+    def test_teacher_can_use_classroom_voice_chat(self, mock_voice_service):
+        mock_voice_service.return_value.answer_voice_question.return_value = {
+            "transcript_original": "Explain transformers",
+            "transcript_english": "Explain transformers",
+            "detected_language_code": "en-IN",
+            "answer_text": "Transformers process tokens with self-attention.",
+            "answer_language_code": "en-IN",
+            "answer_audio_base64": "ZmFrZQ==",
+            "answer_audio_mime_type": "audio/wav",
+            "sources": [{"title": "Lecture 1", "page": 1}],
+        }
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.teacher_token.key}")
+        audio = SimpleUploadedFile("question.wav", b"fake-audio", content_type="audio/wav")
+
+        response = self.client.post(
+            reverse("classroom-chat-voice", args=[self.course.id]),
+            {"audio": audio},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["answer_text"], "Transformers process tokens with self-attention.")

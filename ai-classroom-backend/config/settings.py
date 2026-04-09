@@ -34,6 +34,12 @@ class Settings(BaseSettings):
 
     # Sarvam Configuration (multilingual)
     SARVAM_API_KEY: str = Field(default="")
+    SARVAM_STT_MODEL: str = Field(default="saarika:v2.5")
+    SARVAM_STT_MODE: str = Field(default="")
+    SARVAM_STT_LANGUAGE_CODE: str = Field(default="unknown")
+    SARVAM_TTS_MODEL: str = Field(default="bulbul:v3")
+    SARVAM_TTS_SPEAKER: str = Field(default="shubh")
+    SARVAM_TTS_OUTPUT_CODEC: str = Field(default="wav")
 
     # Optional local embedding backend only
     OLLAMA_BASE_URL: str = Field(default="http://localhost:11434")
@@ -277,10 +283,12 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "50/hour",
         "user": "500/hour",
+        "voice_chat": "60/hour",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "EXCEPTION_HANDLER": "config.exceptions.custom_exception_handler",
@@ -431,6 +439,12 @@ GROQ_CHAT_MAX_TOKENS = settings.GROQ_CHAT_MAX_TOKENS
 GROQ_EMBED_MODEL = settings.GROQ_EMBED_MODEL
 GROQ_EMBED_BASE_URL = settings.GROQ_EMBED_BASE_URL
 SARVAM_API_KEY = settings.SARVAM_API_KEY
+SARVAM_STT_MODEL = settings.SARVAM_STT_MODEL
+SARVAM_STT_MODE = settings.SARVAM_STT_MODE
+SARVAM_STT_LANGUAGE_CODE = settings.SARVAM_STT_LANGUAGE_CODE
+SARVAM_TTS_MODEL = settings.SARVAM_TTS_MODEL
+SARVAM_TTS_SPEAKER = settings.SARVAM_TTS_SPEAKER
+SARVAM_TTS_OUTPUT_CODEC = settings.SARVAM_TTS_OUTPUT_CODEC
 
 OLLAMA_BASE_URL = settings.OLLAMA_BASE_URL
 OLLAMA_EMBED_MODEL = settings.OLLAMA_EMBED_MODEL

@@ -1,17 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import client from "../api/client";
+import { askClassroomVoiceQuestion } from "../api/chat.service";
 import { useChat } from "../hooks/useChat";
-
-const VOICE_LANGUAGE_OPTIONS = [
-  { key: "auto", label: "Auto", source: "auto", target: "auto" },
-  { key: "eng", label: "ENG", source: "en-IN", target: "en-IN" },
-  { key: "hi", label: "HI", source: "hi-IN", target: "hi-IN" },
-  { key: "kan", label: "KAN", source: "kn-IN", target: "kn-IN" },
-  { key: "tam", label: "TAM", source: "ta-IN", target: "ta-IN" },
-  { key: "tel", label: "TEL", source: "te-IN", target: "te-IN" },
-];
 
 function evidenceSnippets(sources) {
   return (sources || [])
@@ -19,11 +10,91 @@ function evidenceSnippets(sources) {
     .slice(0, 2);
 }
 
+function formatDuration(seconds) {
+  const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  const mins = Math.floor(safe / 60);
+  const secs = Math.floor(safe % 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+function VoiceResponseCard({ dataUrl }) {
+  const audioRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return undefined;
+
+    const onLoaded = () => setDuration(audio.duration || 0);
+    const onTimeUpdate = () => setCurrentTime(audio.currentTime || 0);
+    const onEnded = () => setIsPlaying(false);
+
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    audio.addEventListener("ended", onEnded);
+    return () => {
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("timeupdate", onTimeUpdate);
+      audio.removeEventListener("ended", onEnded);
+    };
+  }, []);
+
+  const togglePlayback = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) {
+      audio.pause();
+      setIsPlaying(false);
+      return;
+    }
+    try {
+      await audio.play();
+      setIsPlaying(true);
+    } catch (_error) {
+      setIsPlaying(false);
+    }
+  };
+
+  const seekAudio = (event) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const nextValue = Number(event.target.value);
+    audio.currentTime = Number.isFinite(nextValue) ? nextValue : 0;
+    setCurrentTime(audio.currentTime || 0);
+  };
+
+  return (
+    <div className="voice-response-card">
+      <audio ref={audioRef} src={dataUrl} preload="metadata" />
+      <div className="voice-response-row">
+        <strong>Voice response</strong>
+        <button type="button" className="btn-secondary" onClick={togglePlayback}>
+          {isPlaying ? "Pause" : "Play"}
+        </button>
+      </div>
+      <input
+        type="range"
+        min="0"
+        max={duration || 0}
+        step="0.01"
+        value={Math.min(currentTime, duration || 0)}
+        onChange={seekAudio}
+      />
+      <div className="voice-response-meta">
+        <span>{formatDuration(currentTime)}</span>
+        <span>{formatDuration(duration)}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatInterface({ courseId }) {
   const { messages, loading, error, askQuestion, setMessages } = useChat(courseId);
   const [input, setInput] = useState("");
-  const [voiceLanguageKey, setVoiceLanguageKey] = useState("auto");
   const [isRecording, setIsRecording] = useState(false);
+  const [voicePhase, setVoicePhase] = useState("idle");
   const [voiceStatus, setVoiceStatus] = useState("");
   const scrollRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -95,10 +166,8 @@ export default function ChatInterface({ courseId }) {
 
   const startVoiceRecording = async () => {
     try {
-      const selectedLanguage = VOICE_LANGUAGE_OPTIONS.find((item) => item.key === voiceLanguageKey) || VOICE_LANGUAGE_OPTIONS[0];
-
       if (!navigator?.mediaDevices?.getUserMedia) {
-        setVoiceStatus("This browser does not support microphone access.");
+        setVoiceStatus("Your browser does not support microphone input.");
         return;
       }
 
@@ -106,7 +175,7 @@ export default function ChatInterface({ courseId }) {
       micStreamRef.current = stream;
 
       if (typeof MediaRecorder === "undefined") {
-        setVoiceStatus("This browser does not support audio recording.");
+        setVoiceStatus("Audio recording is not supported in this browser.");
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -126,47 +195,67 @@ export default function ChatInterface({ courseId }) {
       };
 
       recorder.onstop = async () => {
+        let phaseTimer = null;
         try {
-          setVoiceStatus("Transcribing with Sarvam, translating, and generating answer...");
+          setVoicePhase("transcribing");
+          setVoiceStatus("Transcribing your voice...");
           const blob = new Blob(audioChunksRef.current, { type: mimeType || "audio/webm" });
-          const ext = (mimeType || "audio/webm").includes("ogg") ? "ogg" : (mimeType || "audio/webm").includes("wav") ? "wav" : "webm";
-          const formData = new FormData();
-          formData.append("audio", blob, `voice.${ext}`);
-          formData.append("audio_mime_type", mimeType || "audio/webm");
-          formData.append("source_language_code", selectedLanguage.source);
-          formData.append("target_language_code", selectedLanguage.target);
+          phaseTimer = window.setTimeout(() => {
+            setVoicePhase("voice-processing");
+            setVoiceStatus("Generating grounded voice answer...");
+          }, 900);
 
-          const voiceRes = await client.post(`/courses/${courseId}/chat/voice-ask/`, formData, {
-            headers: { "Content-Type": "multipart/form-data" },
-          });
-          const data = voiceRes.data || {};
+          const data = await askClassroomVoiceQuestion(courseId, blob, mimeType || "audio/webm");
           const userId = Date.now();
+          const audioMime = data.answerAudioMimeType || "audio/wav";
+          const audioDataUrl = data.answerAudioBase64 ? `data:${audioMime};base64,${data.answerAudioBase64}` : "";
 
           setMessages((prev) => [
             ...prev,
-            { role: "STUDENT", message: data.transcript || "[Voice]", id: userId },
-            { role: "AI", message: data.answer || "", id: userId + 1, sources: data.sources || [] },
+            {
+              role: "STUDENT",
+              message: data.transcriptOriginal || "[Voice]",
+              id: userId,
+            },
+            {
+              role: "AI",
+              message: data.answerText || "",
+              id: data?.assistantMessage?.id || userId + 1,
+              sources: data?.assistantMessage?.sources || [],
+              voiceAudioDataUrl: audioDataUrl,
+            },
           ]);
 
-          if (data.audio_base64) {
-            const mime = data.audio_mime_type || "audio/mpeg";
-            const audio = new Audio(`data:${mime};base64,${data.audio_base64}`);
-            audio.play().catch(() => undefined);
-          }
-
-          const detectedLabel = data?.detected_language_code || selectedLanguage.source;
+          const detectedLabel = data?.detectedLanguageCode || "unknown";
           setVoiceStatus(`Voice response ready (${detectedLabel}).`);
+          setVoicePhase("idle");
         } catch (err) {
-          const detail = err?.response?.data?.detail || "Could not process voice audio right now.";
-          setVoiceStatus(detail);
+          const detail =
+            err?.response?.data?.detail ||
+            err?.response?.data?.error ||
+            "We could not process your voice request right now.";
+          if (/permission/i.test(detail)) {
+            setVoiceStatus("Microphone permission was denied. Please allow mic access and try again.");
+          } else if (/transcrib/i.test(detail)) {
+            setVoiceStatus("Transcription failed. Please speak clearly and try again.");
+          } else {
+            setVoiceStatus(detail);
+          }
+          setVoicePhase("idle");
+        } finally {
+          if (phaseTimer) {
+            clearTimeout(phaseTimer);
+          }
         }
       };
 
       recorder.start();
       setIsRecording(true);
+      setVoicePhase("recording");
       setVoiceStatus("Recording... click again to stop.");
     } catch (_e) {
       setVoiceStatus("Microphone permission denied.");
+      setVoicePhase("idle");
     }
   };
 
@@ -195,18 +284,6 @@ export default function ChatInterface({ courseId }) {
           <h3>AI Teacher</h3>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <div className="voice-language-picker" role="group" aria-label="Voice language">
-            {VOICE_LANGUAGE_OPTIONS.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                className={`voice-lang-btn ${voiceLanguageKey === item.key ? "active" : ""}`}
-                onClick={() => setVoiceLanguageKey(item.key)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
           {messages.length > 0 && (
             <button className="btn-clear" onClick={clearChat} title="Clear Chat">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
@@ -222,6 +299,11 @@ export default function ChatInterface({ courseId }) {
           </button>
         </div>
       </div>
+      {voicePhase !== "idle" && (
+        <p className="text-muted" style={{ marginBottom: "0.4rem" }}>
+          {voicePhase === "recording" ? "Recording audio..." : voicePhase === "transcribing" ? "Transcribing..." : "Voice processing..."}
+        </p>
+      )}
       {voiceStatus && <p className="text-muted" style={{ marginBottom: "0.5rem" }}>{voiceStatus}</p>}
       <div className="chat-messages" ref={scrollRef}>
         {messages.length === 0 && (
@@ -246,6 +328,10 @@ export default function ChatInterface({ courseId }) {
                   <blockquote key={`${msg.id}-evidence-${index}`}>{source.snippet}</blockquote>
                 ))}
               </div>
+            )}
+
+            {msg.role === "AI" && msg.voiceAudioDataUrl && (
+              <VoiceResponseCard dataUrl={msg.voiceAudioDataUrl} />
             )}
           </div>
         ))}

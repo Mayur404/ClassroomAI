@@ -1,27 +1,28 @@
+import logging
+
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.http import StreamingHttpResponse
-from django.conf import settings
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.ai_service.services import answer_course_question
 from apps.ai_service.pdf_chat_service import answer_pdf_chat_question
 from apps.ai_service.streaming_service import stream_response_to_sse
+from apps.ai_service.voice_chat_service import VoiceChatService, VoiceChatError
 from apps.ai_service.language_service import (
     normalize_language_code,
-    synthesize_speech_with_sarvam,
-    transcribe_audio_with_sarvam,
-    translate_text_with_sarvam_meta,
-    translate_text_with_sarvam,
 )
 from apps.courses.models import Course
 
 from .models import ChatMessage, ChatRole
 from .serializers import ChatMessageSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class ChatHistoryView(generics.ListAPIView):
@@ -168,91 +169,110 @@ class ChatStreamingView(APIView):
 
 
 class VoiceAskView(APIView):
-    """Reliable voice ask endpoint (record -> upload -> STT -> RAG answer -> optional TTS)."""
+    """Backward-compatible voice ask endpoint for existing frontend clients."""
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "voice_chat"
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request, course_id):
-        if request.user.role not in {"STUDENT", "TEACHER"}:
-            raise PermissionDenied("Voice AI tutor is available only for students and teachers.")
+        if request.user.role not in {"TEACHER", "STUDENT"}:
+            raise PermissionDenied("Voice AI tutor is available only for teachers and students.")
 
         course = _resolve_accessible_course(request.user, course_id)
-        source_language_code = str(request.data.get("source_language_code", "unknown")).strip() or "unknown"
-        target_language_code = str(request.data.get("target_language_code", "auto")).strip() or "auto"
-        source_language_code = normalize_language_code(source_language_code, fallback="unknown")
-        target_language_code = normalize_language_code(target_language_code, fallback="unknown")
-
-        transcript = str(request.data.get("transcript", "")).strip()
         audio_file = request.FILES.get("audio")
+        if not audio_file:
+            return Response({"detail": "Provide audio file."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if not transcript and not audio_file:
-            return Response({"detail": "Provide transcript or audio."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not transcript and not getattr(settings, "SARVAM_API_KEY", ""):
+        try:
+            result = VoiceChatService().answer_voice_question(course=course, user=request.user, audio_file=audio_file)
+        except VoiceChatError as exc:
+            return Response({"detail": exc.detail}, status=exc.status_code)
+        except Exception as exc:
+            logger.exception("Voice tutor request failed for course %s user %s", course.id, request.user.id)
             return Response(
-                {"detail": "Voice pipeline unavailable: SARVAM_API_KEY is not configured."},
+                {
+                    "detail": str(exc) if settings.DEBUG else "Voice processing failed.",
+                    "error": str(exc),
+                },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-
-        detected_language_code = source_language_code
-        if not transcript and audio_file:
-            audio_bytes = audio_file.read()
-            mime_hint = str(request.data.get("audio_mime_type", "")).strip() or getattr(audio_file, "content_type", "audio/webm") or "audio/webm"
-            stt_result = transcribe_audio_with_sarvam(
-                audio_bytes=audio_bytes,
-                source_language_code=source_language_code,
-                mime_type=mime_hint,
-            )
-            transcript = (stt_result.get("transcript") or "").strip()
-            detected_language_code = stt_result.get("language_code") or detected_language_code
-            stt_error = stt_result.get("error")
-        else:
-            stt_error = ""
-
-        if not transcript:
-            return Response(
-                {"detail": f"Could not transcribe audio. {stt_error}".strip()},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        effective_source_language = detected_language_code or source_language_code or "en-IN"
-        effective_target_language = target_language_code
-        if effective_target_language == "unknown":
-            effective_target_language = effective_source_language if effective_source_language not in {"unknown", "auto"} else "en-IN"
-
-        normalized_question = translate_text_with_sarvam(
-            transcript,
-            source_language_code=effective_source_language,
-            target_language_code="en-IN",
-        )
-
-        result = answer_course_question(course=course, question=normalized_question, user=request.user, include_context=True)
-        localized_answer = translate_text_with_sarvam(
-            result["answer"],
-            source_language_code="en-IN",
-            target_language_code=effective_target_language,
-        )
-        audio_base64 = synthesize_speech_with_sarvam(localized_answer, target_language_code=effective_target_language)
 
         message = ChatMessage.objects.create(
             course=course,
             student=request.user,
             role=ChatRole.STUDENT,
-            message=transcript,
-            ai_response=localized_answer,
+            message=result["transcript_original"],
+            ai_response=result["answer_text"],
             sources=result.get("sources", []),
         )
 
         return Response(
             {
                 "id": message.id,
-                "transcript": transcript,
-                "answer": localized_answer,
+                "transcript": result["transcript_original"],
+                "answer": result["answer_text"],
                 "sources": result.get("sources", []),
-                "audio_base64": audio_base64,
-                "detected_language_code": effective_source_language,
-                "resolved_target_language_code": effective_target_language,
-                "audio_mime_type": "audio/mpeg" if audio_base64 else None,
+                "audio_base64": result["answer_audio_base64"],
+                "detected_language_code": result["detected_language_code"],
+                "resolved_target_language_code": result["answer_language_code"],
+                "audio_mime_type": result["answer_audio_mime_type"],
+                "assistant_message": ChatMessageSerializer(message).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ClassroomVoiceChatView(APIView):
+    """Classroom voice chat endpoint with auto language detection via Sarvam."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "voice_chat"
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, classroom_id):
+        if request.user.role not in {"TEACHER", "STUDENT"}:
+            raise PermissionDenied("Voice classroom chat is available only for teachers and students.")
+
+        course = _resolve_accessible_course(request.user, classroom_id)
+        audio_file = request.FILES.get("audio")
+        if not audio_file:
+            return Response({"detail": "Audio file is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = VoiceChatService().answer_voice_question(course=course, user=request.user, audio_file=audio_file)
+        except VoiceChatError as exc:
+            return Response({"detail": exc.detail}, status=exc.status_code)
+        except Exception as exc:
+            logger.exception("Classroom voice request failed for course %s user %s", course.id, request.user.id)
+            return Response(
+                {
+                    "detail": str(exc) if settings.DEBUG else "Voice processing failed.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        message = ChatMessage.objects.create(
+            course=course,
+            student=request.user,
+            role=ChatRole.STUDENT,
+            message=result["transcript_original"],
+            ai_response=result["answer_text"],
+            sources=result.get("sources", []),
+        )
+        serialized = ChatMessageSerializer(message).data
+
+        return Response(
+            {
+                "transcript_original": result["transcript_original"],
+                "transcript_english": result["transcript_english"],
+                "detected_language_code": result["detected_language_code"],
+                "answer_text": result["answer_text"],
+                "answer_language_code": result["answer_language_code"],
+                "answer_audio_base64": result["answer_audio_base64"],
+                "answer_audio_mime_type": result["answer_audio_mime_type"],
+                "assistant_message": serialized,
             },
             status=status.HTTP_200_OK,
         )

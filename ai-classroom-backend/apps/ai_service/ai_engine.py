@@ -56,13 +56,13 @@ class CustomSarvamService:
 
         url = "https://api.sarvam.ai/translate"
         payload = {
-            "input": [text],
+            "input": text,
             "source_language_code": "en-IN",
             "target_language_code": "hi-IN",
             "speaker_gender": "Male",
             "mode": "formal",
-            "model": "mayura:v1",
-            "enable_preprocessing": True
+            "model": "sarvam-translate:v1",
+            "enable_preprocessing": False
         }
         headers = {
             "api-subscription-key": sarvam_api_key,
@@ -73,7 +73,7 @@ class CustomSarvamService:
             response = requests.post(url, json=payload, headers=headers)
             if response.status_code == 200:
                 translated_data = response.json()
-                return translated_data.get("translated_text", [text])[0]
+                return translated_data.get("translated_text", text)
             else:
                 return text
         except Exception as e:
