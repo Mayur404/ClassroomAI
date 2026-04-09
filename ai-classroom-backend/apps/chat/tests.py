@@ -4,12 +4,18 @@ from django.urls import reverse
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from apps.courses.models import Course, CourseMaterial
+from apps.courses.models import Course, CourseMaterial, Enrollment
 from apps.users.models import User, UserRole
 
 
 class ChatFallbackTests(APITestCase):
     def setUp(self):
+        self.teacher = User.objects.create_user(
+            email="teacher@example.com",
+            password="testpass123",
+            name="Teacher",
+            role=UserRole.TEACHER,
+        )
         self.user = User.objects.create_user(
             email="chat@example.com",
             password="testpass123",
@@ -18,7 +24,8 @@ class ChatFallbackTests(APITestCase):
         )
         token = Token.objects.create(user=self.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
-        self.course = Course.objects.create(teacher=self.user, name="Algorithms")
+        self.course = Course.objects.create(teacher=self.teacher, name="Algorithms")
+        Enrollment.objects.create(course=self.course, student=self.user)
         CourseMaterial.objects.create(
             course=self.course,
             title="Recursion Notes",
@@ -36,8 +43,8 @@ class ChatFallbackTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("your pdf", response.data["ai_response"].lower())
-        self.assertIn("Recursion solves a problem", response.data["ai_response"])
+        self.assertIn("exact answer text", response.data["answer_text"].lower())
+        self.assertIn("Recursion solves a problem", response.data["answer_text"])
         self.assertGreaterEqual(len(response.data["sources"]), 1)
 
     @mock.patch("apps.ai_service.services.call_ollama")
@@ -49,9 +56,9 @@ class ChatFallbackTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("exact answer text", response.data["ai_response"].lower())
+        self.assertIn("exact answer text", response.data["answer_text"].lower())
         self.assertIn(
             "Recursion solves a problem by reducing it to smaller versions of the same problem.",
-            response.data["ai_response"],
+            response.data["answer_text"],
         )
         mock_call_ollama.assert_not_called()

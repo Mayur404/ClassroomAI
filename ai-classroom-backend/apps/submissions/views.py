@@ -2,11 +2,13 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.ai_service.services import grade_submission
 from apps.assignments.models import Assignment
+from apps.assignments.models import AssignmentStatus
 
 from .models import Submission, SubmissionStatus
 from .serializers import SubmissionSerializer
@@ -17,11 +19,15 @@ class SubmissionCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, assignment_id):
+        if request.user.role != "STUDENT":
+            raise PermissionDenied("Only students can submit assignments.")
         assignment = get_object_or_404(
             Assignment.objects.select_related("course"),
             id=assignment_id,
-            course__teacher=request.user,
+            course__enrollments__student=request.user,
         )
+        if assignment.status != AssignmentStatus.PUBLISHED:
+            return Response({"detail": "This assignment is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
         serializer = SubmissionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -59,6 +65,8 @@ class SubmissionRegradeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, submission_id):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can regrade submissions.")
         submission = get_object_or_404(
             Submission.objects.select_related("assignment", "assignment__course"),
             id=submission_id,
@@ -72,3 +80,34 @@ class SubmissionRegradeView(APIView):
         submission.graded_at = timezone.now()
         submission.save(update_fields=["ai_grade", "ai_feedback", "score_breakdown", "status", "graded_at"])
         return Response(SubmissionSerializer(submission).data, status=status.HTTP_200_OK)
+
+
+class SubmissionPrecheckView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, assignment_id):
+        if request.user.role != "STUDENT":
+            raise PermissionDenied("Only students can pre-check submissions.")
+        assignment = get_object_or_404(
+            Assignment.objects.select_related("course"),
+            id=assignment_id,
+            course__enrollments__student=request.user,
+        )
+        if assignment.status != AssignmentStatus.PUBLISHED:
+            return Response({"detail": "This assignment is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
+        answers = request.data.get("answers", {})
+        if not isinstance(answers, dict) or not answers:
+            return Response({"detail": "answers must be a non-empty object"}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = grade_submission(assignment=assignment, answers=answers)
+        return Response(
+            {
+                "preview": True,
+                "assignment_id": assignment.id,
+                "total_score": result.get("total_score", 0),
+                "overall_feedback": result.get("overall_feedback", ""),
+                "score_breakdown": result.get("score_breakdown", []),
+                "ai_feedback": result.get("ai_feedback", {}),
+            },
+            status=status.HTTP_200_OK,
+        )

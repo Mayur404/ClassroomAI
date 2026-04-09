@@ -280,6 +280,12 @@ nav a.active {
 
 .btn-secondary:hover { background: rgba(255,255,255,0.08); border-color: var(--primary); }
 
+.btn-secondary.active-scope {
+  background: rgba(59, 130, 246, 0.16);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #bfdbfe;
+}
+
 button:disabled, .btn-primary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -438,10 +444,13 @@ input::placeholder, textarea::placeholder {
   padding: 0.3rem;
   border-radius: var(--radius);
   border: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .tab {
-  flex: 1;
+  flex: 0 0 auto;
+  min-width: 110px;
   background: transparent;
   color: var(--text-muted);
   border: none;
@@ -906,6 +915,121 @@ input::placeholder, textarea::placeholder {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.flashcard-stage {
+  margin-top: 0.6rem;
+}
+
+.lab-two-box-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+}
+
+.lab-card {
+  min-height: 220px;
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  background: linear-gradient(170deg, rgba(15, 23, 42, 0.72), rgba(15, 23, 42, 0.45));
+  box-shadow: var(--shadow), 0 0 0 1px rgba(59, 130, 246, 0.08) inset;
+}
+
+.flashcard-qa-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.78), rgba(15, 23, 42, 0.82));
+  box-shadow: 0 10px 30px -18px rgba(15, 23, 42, 0.9);
+  transform-style: preserve-3d;
+  transition: transform 240ms ease, box-shadow 240ms ease, border-color 240ms ease;
+  animation: flashcardPop 220ms ease-out;
+}
+
+.flashcard-qa-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(96, 165, 250, 0.35);
+  box-shadow: 0 18px 36px -24px rgba(96, 165, 250, 0.45);
+}
+
+.flashcard-qa-card.revealed {
+  border-color: rgba(52, 211, 153, 0.38);
+}
+
+.flashcard-answer-block {
+  margin-top: 0.8rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.7rem;
+  border: 1px solid rgba(52, 211, 153, 0.33);
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.17), rgba(6, 95, 70, 0.14));
+  animation: answerSlideIn 240ms ease-out;
+}
+
+.flashcard-progress {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.flashcard-progress .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 100px;
+  background: rgba(148, 163, 184, 0.35);
+  transition: transform 200ms ease, background-color 200ms ease;
+}
+
+.flashcard-progress .dot.active {
+  background: #60a5fa;
+  transform: scale(1.3);
+}
+
+@keyframes flashcardPop {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes answerSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.voice-language-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.voice-lang-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.voice-lang-btn.active {
+  color: #dbeafe;
+  border-color: rgba(59, 130, 246, 0.4);
+  background: rgba(59, 130, 246, 0.2);
 }
 
 /* ─── Chat Interface ──────────────────────────── */

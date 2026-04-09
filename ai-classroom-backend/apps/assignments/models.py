@@ -25,6 +25,7 @@ class Assignment(models.Model):
     questions = models.JSONField(default=list)
     rubric = models.JSONField(default=list, blank=True)
     answer_key = models.JSONField(default=dict, blank=True)
+    assignment_pdf = models.FileField(upload_to="assignments/", blank=True, null=True)
     due_date = models.DateTimeField()
     covered_until_class = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)

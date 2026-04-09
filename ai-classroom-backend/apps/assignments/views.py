@@ -2,6 +2,7 @@ from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -31,8 +32,15 @@ class AssignmentListView(generics.ListAPIView):
     serializer_class = AssignmentSerializer
 
     def get_queryset(self):
-        course = get_object_or_404(Course, id=self.kwargs["course_id"], teacher=self.request.user)
-        return _assignment_queryset_for_user(self.request.user).filter(course=course)
+        if self.request.user.role == "TEACHER":
+            course = get_object_or_404(Course, id=self.kwargs["course_id"], teacher=self.request.user)
+            return _assignment_queryset_for_user(self.request.user).filter(course=course)
+        else:
+            course = get_object_or_404(Course, id=self.kwargs["course_id"], enrollments__student=self.request.user)
+            return _assignment_queryset_for_user(self.request.user).filter(
+                course=course,
+                status=AssignmentStatus.PUBLISHED,
+            )
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -40,23 +48,40 @@ class AssignmentListView(generics.ListAPIView):
         return context
 
 
-class AssignmentDetailView(generics.RetrieveDestroyAPIView):
+class AssignmentDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AssignmentSerializer
 
     def get_queryset(self):
-        return _assignment_queryset_for_user(self.request.user).filter(course__teacher=self.request.user)
+        if self.request.user.role == "TEACHER":
+            return _assignment_queryset_for_user(self.request.user).filter(course__teacher=self.request.user)
+        return _assignment_queryset_for_user(self.request.user).filter(
+            course__enrollments__student=self.request.user,
+            status=AssignmentStatus.PUBLISHED,
+        ).distinct()
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
+
+    def destroy(self, request, *args, **kwargs):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can delete assignments.")
+        return super().destroy(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can edit assignments.")
+        return super().update(request, *args, **kwargs)
 
 
 class AssignmentGenerateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, course_id):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can generate assignments.")
         course = get_object_or_404(Course, id=course_id, teacher=request.user)
         serializer = AssignmentGenerateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -109,10 +134,35 @@ class AssignmentGenerateView(APIView):
                 )
 
         if not covered_topics:
-            return Response(
-                {"detail": "Upload and analyze course materials before generating assignments."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            # Fallback when topic extraction metadata is sparse: infer from raw material text.
+            for material in course.materials.all()[:8]:
+                raw = (material.content_text or "").strip()
+                if not raw:
+                    continue
+                candidate = raw.split(".")[0].strip()[:120]
+                if not candidate:
+                    continue
+                covered_topics.append(candidate)
+                covered_outline.append(
+                    {
+                        "topic": candidate,
+                        "subtopics": [],
+                        "learning_objectives": [],
+                    }
+                )
+                if len(covered_topics) >= 4:
+                    break
+
+        if not covered_topics:
+            fallback_topic = f"Core concepts in {course.name}"
+            covered_topics = [fallback_topic]
+            covered_outline = [
+                {
+                    "topic": fallback_topic,
+                    "subtopics": [],
+                    "learning_objectives": ["Demonstrate understanding of core concepts."],
+                }
+            ]
 
         payload = generate_assignment_for_course(
             course=course,
@@ -135,8 +185,8 @@ class AssignmentGenerateView(APIView):
             answer_key=payload.get("answer_key", {}),
             due_date=serializer.validated_data["due_date"],
             covered_until_class=covered_until_class,
-            status=AssignmentStatus.PUBLISHED,
-            published_at=timezone.now(),
+            status=AssignmentStatus.DRAFT,
+            published_at=None,
         )
         return Response(AssignmentSerializer(assignment, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
@@ -145,8 +195,58 @@ class AssignmentPublishView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, assignment_id):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can publish assignments.")
         assignment = get_object_or_404(Assignment, id=assignment_id, course__teacher=request.user)
         assignment.status = AssignmentStatus.PUBLISHED
         assignment.published_at = timezone.now()
         assignment.save(update_fields=["status", "published_at"])
         return Response(AssignmentSerializer(assignment, context={"request": request}).data)
+
+
+class AssignmentManualCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, course_id):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can upload assignments.")
+
+        course = get_object_or_404(Course, id=course_id, teacher=request.user)
+        title = str(request.data.get("title", "")).strip()
+        assignment_type = str(request.data.get("type", "ESSAY")).strip().upper()
+        description = str(request.data.get("description", "")).strip()
+        questions = request.data.get("questions", [])
+        rubric = request.data.get("rubric", [])
+        total_marks = int(request.data.get("total_marks", 100) or 100)
+        due_date = request.data.get("due_date")
+
+        if not title:
+            return Response({"detail": "title is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if assignment_type not in {"MCQ", "ESSAY", "CODING"}:
+            return Response({"detail": "type must be MCQ, ESSAY or CODING"}, status=status.HTTP_400_BAD_REQUEST)
+        if not due_date:
+            return Response({"detail": "due_date is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = AssignmentGenerateSerializer(
+            data={
+                "title": title,
+                "type": assignment_type,
+                "due_date": due_date,
+            }
+        )
+        serializer.is_valid(raise_exception=True)
+
+        assignment = Assignment.objects.create(
+            course=course,
+            title=title,
+            description=description,
+            type=assignment_type,
+            total_marks=max(total_marks, 1),
+            questions=questions if isinstance(questions, list) else [],
+            rubric=rubric if isinstance(rubric, list) else [],
+            due_date=serializer.validated_data["due_date"],
+            status=AssignmentStatus.DRAFT,
+            published_at=None,
+        )
+
+        return Response(AssignmentSerializer(assignment, context={"request": request}).data, status=status.HTTP_201_CREATED)

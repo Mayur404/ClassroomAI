@@ -1,5 +1,7 @@
 from django.conf import settings
 from django.db import models
+import secrets
+import string
 
 
 class CourseStatus(models.TextChoices):
@@ -37,6 +39,7 @@ class Course(models.Model):
     extracted_policies = models.JSONField(default=list, blank=True)
     parse_metadata = models.JSONField(default=dict, blank=True)
     schedule_approved_at = models.DateTimeField(blank=True, null=True)
+    invite_code = models.CharField(max_length=6, unique=True, editable=False, db_index=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -47,6 +50,16 @@ class Course(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+    def save(self, *args, **kwargs):
+        if not self.invite_code:
+            alphabet = string.ascii_uppercase + string.digits
+            for _ in range(12):
+                candidate = "".join(secrets.choice(alphabet) for _ in range(6))
+                if not Course.objects.filter(invite_code=candidate).exists():
+                    self.invite_code = candidate
+                    break
+        super().save(*args, **kwargs)
 
 
 def material_upload_path(instance, filename):
@@ -95,3 +108,37 @@ class ClassSchedule(models.Model):
     class Meta:
         ordering = ("class_number", "order_index")
         unique_together = ("course", "class_number")
+
+
+class StudentNotebook(models.Model):
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="student_notebooks")
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="private_notebooks")
+    title = models.CharField(max_length=255, default="Personal Notes")
+    content_text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-updated_at",)
+        indexes = [
+            models.Index(fields=["course", "student", "-updated_at"]),
+        ]
+
+
+class StudentFlashcard(models.Model):
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="flashcards")
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="flashcards")
+    question = models.TextField()
+    answer = models.TextField()
+    ease_factor = models.FloatField(default=2.5)
+    interval_days = models.PositiveIntegerField(default=0)
+    repetitions = models.PositiveIntegerField(default=0)
+    due_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("due_at",)
+        indexes = [
+            models.Index(fields=["course", "student", "due_at"]),
+        ]

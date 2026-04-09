@@ -2,27 +2,79 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 
+function getAuthErrorMessage(err) {
+  const data = err?.response?.data;
+
+  if (typeof data?.detail === "string" && data.detail.trim()) {
+    return data.detail;
+  }
+
+  if (typeof data?.error === "string" && data.error.trim()) {
+    return data.error;
+  }
+
+  if (data?.error && typeof data.error === "object") {
+    const firstFieldError = Object.values(data.error).find((value) => Array.isArray(value) && value.length);
+    if (firstFieldError) {
+      return firstFieldError[0];
+    }
+  }
+
+  if (Array.isArray(data?.non_field_errors) && data.non_field_errors.length) {
+    return data.non_field_errors[0];
+  }
+
+  return "Authentication failed. Please try again.";
+}
+
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, register } = useAuth();
+  const [mode, setMode] = useState("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("STUDENT");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!name.trim() || !email.trim()) {
-      setError("Please fill in both fields.");
+    if (!email.trim()) {
+      setError("Please enter your email.");
+      return;
+    }
+    if (!password.trim()) {
+      setError("Please enter your password.");
+      return;
+    }
+    if (mode === "register" && password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (mode === "register" && !name.trim()) {
+      setError("Please enter your name.");
       return;
     }
     setLoading(true);
     setError("");
     try {
-      await login({ name: name.trim(), email: email.trim(), role: "STUDENT" });
+      if (mode === "register") {
+        await register({
+          name: name.trim(),
+          email: email.trim(),
+          password,
+          role,
+        });
+      } else {
+        await login({
+          email: email.trim(),
+          password,
+        });
+      }
       navigate("/");
     } catch (err) {
-      setError("Login failed. Please try again.");
+      setError(getAuthErrorMessage(err));
       setLoading(false);
     }
   };
@@ -32,21 +84,27 @@ export default function LoginPage() {
       <section className="login-card panel">
         <div className="login-header">
           <h2>Welcome to AI-Classroom</h2>
-          <p className="text-muted">Enter your details to start learning</p>
+          <p className="text-muted">Simple auth with Student/Teacher roles</p>
+        </div>
+        <div className="actions" style={{ marginTop: 0 }}>
+          <button type="button" className={mode === "login" ? "btn-primary" : "btn-secondary"} onClick={() => setMode("login")}>Sign In</button>
+          <button type="button" className={mode === "register" ? "btn-primary" : "btn-secondary"} onClick={() => setMode("register")}>Register</button>
         </div>
         {error && <div className="error-message">{error}</div>}
         <form className="stack compact" onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label htmlFor="name">Your Name</label>
-            <input
-              id="name"
-              type="text"
-              placeholder=""
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-            />
-          </div>
+          {mode === "register" && (
+            <div className="form-group">
+              <label htmlFor="name">Your Name</label>
+              <input
+                id="name"
+                type="text"
+                placeholder=""
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+              />
+            </div>
+          )}
           <div className="form-group">
             <label htmlFor="email">Email Address</label>
             <input
@@ -57,8 +115,28 @@ export default function LoginPage() {
               onChange={(e) => setEmail(e.target.value)}
             />
           </div>
+          <div className="form-group">
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              type="password"
+              placeholder=""
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={mode === "register" ? 8 : undefined}
+            />
+          </div>
+          {mode === "register" && (
+            <div className="form-group">
+              <label htmlFor="role">Role</label>
+              <select id="role" value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="STUDENT">Student</option>
+                <option value="TEACHER">Teacher</option>
+              </select>
+            </div>
+          )}
           <button type="submit" disabled={loading} className="btn-primary btn-full">
-            {loading ? "Signing in..." : "Start Learning →"}
+            {loading ? "Please wait..." : mode === "register" ? "Create Account" : "Sign In"}
           </button>
         </form>
       </section>

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Incoming Call</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; display: flex;
+           align-items: center; justify-content: center;
+           min-height: 100vh; background: #0f1117; color: white; }
+    .card { text-align: center; padding: 40px 32px;
+            background: #1a1d27; border-radius: 16px; width: 300px; }
+    .avatar { width: 80px; height: 80px; border-radius: 50%;
+              background: #1a56b0; display: flex; align-items: center;
+              justify-content: center; font-size: 36px;
+              margin: 0 auto 16px; }
+    .avatar.ringing { animation: ring 0.5s infinite alternate; }
+    .avatar.connected { animation: pulse 2s infinite; }
+    @keyframes ring {
+      from { transform: rotate(-10deg); }
+      to { transform: rotate(10deg); }
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(26,86,176,0.4); }
+      50% { box-shadow: 0 0 0 16px rgba(26,86,176,0); }
+    }
+    h2 { font-size: 20px; margin-bottom: 4px; }
+    .sub { color: #888; font-size: 13px; margin-bottom: 24px; }
+    #statusText { font-size: 13px; color: #ccc;
+                  margin-bottom: 20px; min-height: 36px; }
+    .btn-row { display: flex; gap: 12px; }
+    .btn { flex: 1; padding: 12px; border: none; border-radius: 8px;
+           font-size: 15px; cursor: pointer; font-weight: bold; }
+    .btn-accept { background: #4caf50; color: white; }
+    .btn-end { background: #e53935; color: white; }
+    #log { margin-top: 16px; background: #0a0a0a; border-radius: 8px;
+           padding: 10px; font-family: monospace; font-size: 11px;
+           white-space: pre-wrap; max-height: 120px; overflow-y: auto;
+           text-align: left; color: #888; display: none; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="avatar ringing" id="avatar">📞</div>
+  <h2>Incoming Call</h2>
+  <div class="sub">Bank Agent</div>
+  <div id="statusText">Ringing...</div>
+  <div class="btn-row">
+    <button class="btn btn-accept" onclick="acceptCall()" id="acceptBtn">
+      ✅ Accept
+    </button>
+    <button class="btn btn-end" onclick="endCall()">
+      📵 Decline
+    </button>
+  </div>
+  <div id="log"></div>
+</div>
+
+<script>
+  const params = new URL(window.location.href).searchParams;
+  const roomId = params.get('room');
+  const role = 'customer';
+
+  let ws, pc, localStream;
+  let pendingCandidates = [];
+  let accepted = false;
+
+  const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+  function setStatus(t) {
+    document.getElementById('statusText').textContent = t;
+  }
+
+  function log(msg) {
+    const el = document.getElementById('log');
+    el.style.display = 'block';
+    el.textContent += msg + '\n';
+    el.scrollTop = el.scrollHeight;
+    console.log(msg);
+  }
+
+  async function acceptCall() {
+    accepted = true;
+    document.getElementById('acceptBtn').disabled = true;
+    document.getElementById('acceptBtn').textContent = '✅ Accepted';
+    document.getElementById('avatar').className = 'avatar connected';
+    document.getElementById('avatar').textContent = '🔊';
+    setStatus('Connecting...');
+
+    // Get mic
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+          channelCount: 1
+        }
+      });
+      log('Mic ready');
+    } catch(e) {
+      setStatus('Mic denied. Please allow and retry.');
+      return;
+    }
+
+    // Connect to signaling — use same host as page
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsHost = window.location.host;
+    ws = new WebSocket(`${wsProtocol}//${wsHost}/webrtc-signal?room=${roomId}&role=${role}`);
+
+    ws.onopen = () => {
+      log('Connected to server');
+      setStatus('Waiting for agent...');
+    };
+    ws.onclose = () => setStatus('Call ended.');
+    ws.onerror = () => setStatus('Connection error.');
+
+    ws.onmessage = async ({ data }) => {
+      const msg = JSON.parse(data);
+      log('Received: ' + msg.type);
+
+      if (msg.type === 'offer') {
+        log('Got offer — setting up connection...');
+        await setupPeerConnection();
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(msg.offer)
+        );
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: 'answer', answer }));
+        log('Answer sent');
+        await flushCandidates();
+      }
+
+      if (msg.type === 'ice-candidate') {
+        await addCandidate(msg.candidate);
+      }
+    };
+  }
+
+  async function setupPeerConnection() {
+    pc = new RTCPeerConnection(ICE);
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+    pc.ontrack = ({ streams }) => {
+      log('Agent audio received!');
+      setStatus('Connected to agent ✓');
+      document.getElementById('avatar').className = 'avatar connected';
+      const audio = new Audio();
+      audio.srcObject = streams[0];
+      audio.play();
+    };
+
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) {
+        ws.send(JSON.stringify({ type: 'ice-candidate', candidate }));
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      log('State: ' + pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        setStatus('Connected to agent ✓');
+      }
+      if (pc.connectionState === 'disconnected' ||
+          pc.connectionState === 'failed') {
+        setStatus('Call disconnected.');
+      }
+    };
+  }
+
+  async function addCandidate(candidate) {
+    try {
+      if (pc?.remoteDescription?.type) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } else {
+        pendingCandidates.push(candidate);
+      }
+    } catch(e) {
+      log('ICE error: ' + e.message);
+    }
+  }
+
+  async function flushCandidates() {
+    log('Flushing ' + pendingCandidates.length + ' candidates');
+    for (const c of pendingCandidates) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(c));
+      } catch(e) {}
+    }
+    pendingCandidates = [];
+  }
+
+  function endCall() {
+    pc?.close();
+    ws?.close();
+    localStream?.getTracks().forEach(t => t.stop());
+    setStatus('Call ended.');
+    document.getElementById('avatar').textContent = '📵';
+    document.getElementById('avatar').className = 'avatar';
+  }
+
+  // Auto-connect on page load (no accept button needed if you prefer)
+  // acceptCall(); // uncomment this to skip the accept button
+</script>
+</body>
+</html>

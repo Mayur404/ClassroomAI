@@ -32,7 +32,7 @@ class QuestionAnalysis:
         ]
         
         if self.question_type == 'definition':
-            instructions.append("Provide a clear, concise definition from the materials.")
+            instructions.append("Provide a clear answer based on what the materials state.")
         elif self.question_type == 'factual':
             instructions.append("Find and state the exact facts from the course materials.")
         elif self.question_type == 'procedural':
@@ -294,12 +294,13 @@ class PremiumPromptBuilder:
         """Generate system instructions based on question analysis."""
         lines = [
             "SYSTEM INSTRUCTIONS:",
-            f"You are a precise tutor for '{course_name}'.",
-            f"Answer ONLY using evidence from the course materials below.",
+            f"You are a helpful AI teaching assistant for '{course_name}'.",
+            f"Answer the user's question using ONLY the evidence provided below.",
+            "If the answer is present or can be logically deduced from the text, state the answer directly.",
             "",
             analysis.get_instruction_prompt(),
             "",
-            f"Expected answer length: ~{analysis.expected_answer_length} characters",
+            f"Target answer length: ~{analysis.expected_answer_length} characters",
         ]
         return "\n".join(lines)
     
@@ -309,10 +310,10 @@ class PremiumPromptBuilder:
         lines.append(f"(Top {len(chunks)} relevant passages)")
         lines.append("")
         
-        for i, chunk in enumerate(chunks[:5], 1):  # Limit to top 5
-            # Truncate very long chunks
-            display_chunk = chunk[:300] if len(chunk) > 300 else chunk
-            if len(chunk) > 300:
+        for i, chunk in enumerate(chunks[:10], 1):  # Increased evidence capacity
+            # Keep chunks sufficiently long to capture necessary context
+            display_chunk = chunk[:800] if len(chunk) > 800 else chunk
+            if len(chunk) > 800:
                 display_chunk += "..."
             
             lines.append(f"[{i}] {display_chunk}")
@@ -334,79 +335,94 @@ class PremiumPromptBuilder:
         return "\n".join(lines)
     
     def _answer_format_instructions(self, analysis: QuestionAnalysis) -> str:
-        """Format instructions for how to answer."""
+        """Format instructions for a concise, academic teacher response."""
         lines = [
-            "ANSWER FORMAT:",
-            "1. Answer DIRECTLY and CIT using the evidence above.",
+            "INSTRUCTIONS FOR THE TEACHING ASSISTANT:",
+            "1. GROUNDING RULE: Read the provided course materials carefully. "
+            "If the information to answer the question is contained within those materials, answer the question accurately. "
+            "It is completely fine to deduce matching names or shorthand terms based on the provided text.",
+            "If the answer is NOT present, you MUST reply with: 'I couldn't find this in the resources you've provided.'",
+            "2. DEVIATION POLICY: Do NOT answer using outside knowledge.",
+            "3. CONCISENESS: Keep your answer EXTREMELY short and direct. If a name or short phrase answers the question, provide just that.",
         ]
-        
+
+        current_step = 4
+
         if analysis.requires_examples:
-            lines.append("2. Include relevant examples from the materials.")
-        
+            lines.append(
+                f"{current_step}. EXAMPLES: Use only examples explicitly present in the provided materials. "
+                "Do NOT fabricate or introduce external examples."
+            )
+            current_step += 1
+
         if analysis.requires_explanation:
-            lines.append("2. Explain the concept clearly.")
-        
+            lines.append(
+                f"{current_step}. EXPLANATION: Briefly explain the concept strictly as described in the material. "
+                "Do not expand beyond what is written."
+            )
+            current_step += 1
+            
+
         lines.extend([
-            "3. If exact information isn't in materials, say: 'This specific point isn't covered in the course materials.'",
-            "4. Keep answer focused and relevant to the question.",
-            f"5. Target length: {analysis.expected_answer_length} characters.",
+            f"{current_step}. SCOPE: Focus strictly on the question. No conversational filler, no outside knowledge, no assumptions.",
+            f"{current_step + 1}. LENGTH: Target response length is {analysis.expected_answer_length} characters.",
         ])
-        
+
         return "\n".join(lines)
+
     
     @staticmethod
     def _safety_constraints() -> str:
         """Non-negotiable constraints to prevent hallucination."""
         return """CRITICAL CONSTRAINTS:
-✓ ONLY use information from the evidence above
-✓ Do NOT add outside knowledge
-✓ Do NOT invent examples not in materials
-✓ Do NOT guess or assume
-✓ Be honest if materials don't answer the question
-✓ Reference specific passages when possible
-✓ Do NOT speculate about topics not in materials"""
+✓ Use information from the evidence above, but deduct logical names or definitions as requested.
+✓ Do NOT invent examples not in materials.
+✓ Do NOT add outside facts.
+✓ Be honest if materials don't answer the question at all.
+✓ Reference specific passages when possible."""
 
 
 class ResponseValidator:
     """Validate that responses are properly grounded and non-random."""
     
-    @staticmethod
     def validate_answer(
+        self,
         answer: str,
         question: str,
         evidence_chunks: List[str],
         analysis: QuestionAnalysis,
     ) -> tuple[bool, str, float]:
         """
-        Validate that answer is properly grounded.
-        Returns (is_valid, reason, confidence_score)
+        Validate that answer is reasonably grounded without overly penalizing short/direct responses.
         """
-        
-        if not answer or len(answer) < 20:
-            return False, "Answer is too short", 0.0
+        if not answer or len(answer.strip()) < 2:
+            return False, "Answer is empty", 0.0
+            
+        # Very short answers (like single names, values, or 'I couldn't find')
+        # are likely factual extrications and shouldn't be penalized by rigid word counting.
+        if len(answer) < 150:
+            return True, "Direct factual answer accepted", 0.8
         
         # Check 1: Does answer address the question?
-        relevance = ResponseValidator._check_question_relevance(answer, question, analysis)
-        if relevance < 0.5:
-            return False, "Answer doesn't address the question", relevance
+        relevance = self._check_question_relevance(answer, question, analysis)
         
         # Check 2: Does answer use evidence?
-        evidence_usage = ResponseValidator._check_evidence_usage(answer, evidence_chunks)
-        if evidence_usage < 0.3:
-            return False, "Answer doesn't use provided evidence", evidence_usage
+        evidence_usage = self._check_evidence_usage(answer, evidence_chunks)
         
         # Check 3: Does answer avoid hallucination?
-        hallucination_risk = ResponseValidator._check_hallucination_risk(answer)
-        if hallucination_risk > 0.6:
-            return False, "Answer contains likely hallucinations", 1.0 - hallucination_risk
+        hallucination_risk = self._check_hallucination_risk(answer)
         
-        # Combine scores
-        confidence_score = (relevance * 0.4 + evidence_usage * 0.4 + (1.0 - hallucination_risk) * 0.2)
+        # Combine scores (more lenient)
+        confidence_score = (relevance * 0.3 + evidence_usage * 0.3 + (1.0 - hallucination_risk) * 0.4)
         
-        if confidence_score < 0.6:
-            return False, "Overall answer quality is low", confidence_score
+        # If it contains standard refusal we accept it
+        if "i couldn't find" in answer.lower() or "not in the course materials" in answer.lower():
+            return True, "Valid refusal", 1.0
+            
+        if confidence_score < 0.2:
+            return False, "Overall answer quality is remarkably low", confidence_score
         
-        return True, "Answer is well-grounded", confidence_score
+        return True, "Answer is reasonably grounded", confidence_score
     
     @staticmethod
     def _check_question_relevance(answer: str, question: str, analysis: QuestionAnalysis) -> float:

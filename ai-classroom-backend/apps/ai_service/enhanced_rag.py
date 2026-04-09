@@ -26,6 +26,22 @@ class EnhancedRAGService:
         self.query_analyzer = QueryAnalyzer()
         self.parsers: dict[int, DocumentStructureParser] = {}
         self.parser_metadata: dict[int, dict] = {}
+
+    @staticmethod
+    def _course_cache_version_key(course_id: int) -> str:
+        return f"enhanced_rag_version_{course_id}"
+
+    def _get_course_cache_version(self, course_id: int) -> int:
+        version = cache.get(self._course_cache_version_key(course_id))
+        if version is None:
+            cache.set(self._course_cache_version_key(course_id), 1, PARSER_CACHE_TIMEOUT)
+            return 1
+        return int(version)
+
+    def _bump_course_cache_version(self, course_id: int) -> int:
+        next_version = self._get_course_cache_version(course_id) + 1
+        cache.set(self._course_cache_version_key(course_id), next_version, PARSER_CACHE_TIMEOUT)
+        return next_version
     
     def index_with_structure(self, course_id: int, material_id: int, text: str) -> dict:
         """Index material with document structure information."""
@@ -85,7 +101,8 @@ class EnhancedRAGService:
         
         # Try to match heading directly
         if is_heading_query and heading_query:
-            cache_key = f"section_match_{course_id}_{heading_query}"
+            cache_version = self._get_course_cache_version(course_id)
+            cache_key = f"section_match_{course_id}_{cache_version}_{heading_query}"
             cached_match = cache.get(cache_key)
             
             if cached_match is None:
@@ -158,6 +175,13 @@ class EnhancedRAGService:
         cache.set(cache_key, ranked, RELEVANCE_CACHE_TIMEOUT)
         return ranked
 
+    def invalidate_material_cache(self, course_id: int, material_id: int) -> None:
+        parser_key = f"doc_parser_{course_id}_{material_id}"
+        metadata_key = f"doc_metadata_{course_id}_{material_id}"
+        cache.delete(parser_key)
+        cache.delete(metadata_key)
+        self._bump_course_cache_version(course_id)
+
 
 # Global service instance
 _enhanced_rag = EnhancedRAGService()
@@ -174,3 +198,8 @@ def get_ranked_results(question: str, search_results: list[str],
                        sections_matched: list[dict] = None) -> list[tuple[float, str]]:
     """Public function to re-rank results by relevance."""
     return _enhanced_rag.re_rank_by_relevance(question, search_results, sections_matched)
+
+
+def invalidate_material_structure_cache(course_id: int, material_id: int) -> None:
+    """Public helper to invalidate cached section metadata when a material is removed."""
+    _enhanced_rag.invalidate_material_cache(course_id, material_id)

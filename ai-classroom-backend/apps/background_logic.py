@@ -33,15 +33,25 @@ def extract_pdf_logic(material_id: int, file_path: str):
             material.save(update_fields=['content_text', 'parse_status'])
             
             # Run indexing synchronously
-            index_material_logic(material_id)
+            indexing_payload = index_material_logic(material_id)
             
             logger.info(f"Material {material_id} extracted successfully")
-            return {"success": True, "text": result['text']}
+            return {
+                "success": True,
+                "text": result['text'],
+                "extraction": result.get("metadata", {}),
+                "index_result": (indexing_payload or {}).get("index_result"),
+                "pdf_chat_result": (indexing_payload or {}).get("pdf_chat_result"),
+            }
         else:
             material.parse_status = ParseStatus.FAILED
             material.save(update_fields=['parse_status'])
             logger.error(f"Extraction failed for {material_id}: No text found")
-            return {"success": False, "error": "No text found"}
+            return {
+                "success": False,
+                "error": "No text found",
+                "extraction": result.get("metadata", {}),
+            }
     
     except Exception as exc:
         logger.error(f"Error extracting PDF {material_id}: {str(exc)}")
@@ -58,25 +68,41 @@ def index_material_logic(material_id: int):
     try:
         from apps.ai_service.rag_service import index_course_materials
         from apps.ai_service.enhanced_rag import index_material_with_structure
-        
+        from apps.ai_service.pdf_chat_service import index_material_for_pdf_chat
+
         material = CourseMaterial.objects.get(id=material_id)
         course_id = material.course_id
-        
+
         logger.info(f"Indexing material {material_id} for course {course_id}")
-        
-        # Call RAG indexing
+
+        # Primary index used by existing app flow.
         index_result = index_course_materials(course_id, material.id, material.content_text)
-        
-        # Also build document structure for enhanced heading-based queries
-        structure_result = index_material_with_structure(course_id, material.id, material.content_text)
-        
+
+        # Secondary indexes should never break upload success.
+        try:
+            pdf_chat_result = index_material_for_pdf_chat(material)
+        except Exception as pdf_exc:
+            logger.warning("PDF chat indexing degraded for material %s: %s", material_id, pdf_exc)
+            pdf_chat_result = {"status": "DEGRADED", "error": str(pdf_exc)}
+
+        try:
+            structure_result = index_material_with_structure(course_id, material.id, material.content_text)
+        except Exception as structure_exc:
+            logger.warning("Structure indexing degraded for material %s: %s", material_id, structure_exc)
+            structure_result = {"status": "DEGRADED", "error": str(structure_exc)}
+
         material.extracted_topics = index_result.get("topics", [])
-        material.parse_status = ParseStatus.SUCCESS if index_result["status"] == "SUCCESS" else ParseStatus.FAILED
+        material.parse_status = ParseStatus.SUCCESS if index_result.get("status") == "SUCCESS" else ParseStatus.FAILED
         material.save(update_fields=['extracted_topics', 'parse_status'])
-        
+
         logger.info(f"Material {material_id} indexed successfully")
-        return {"success": True, "index_result": index_result, "structure_result": structure_result}
-    
+        return {
+            "success": True,
+            "index_result": index_result,
+            "structure_result": structure_result,
+            "pdf_chat_result": pdf_chat_result,
+        }
+
     except Exception as exc:
         logger.error(f"Error indexing material {material_id}: {str(exc)}")
         if 'material' in locals():

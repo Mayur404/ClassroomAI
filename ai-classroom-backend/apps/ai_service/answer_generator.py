@@ -118,7 +118,7 @@ IMPORTANT RULES:
 1. Use exact quotes or paraphrases from the course evidence
 2. If you see a direct match or exact section, reference it
 3. Do not add outside knowledge or generic explanations
-4. Keep answers concise but complete
+4. Keep your answer EXTREMELY concise, small, and directly to the point.
 5. If the answer cannot be found, say: "I couldn't find this specific information in the course materials."
 
 STUDENT QUESTION:

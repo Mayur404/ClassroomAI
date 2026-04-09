@@ -14,27 +14,24 @@ import pypdfium2 as pdfium
 import requests
 from requests.adapters import HTTPAdapter
 from django.conf import settings
+from groq import Groq
 from pydantic import ValidationError
 from rapidocr_onnxruntime import RapidOCR
 
 from .rag_service import index_course_materials, search_course
 from .enhanced_rag import intelligent_search, get_ranked_results, index_material_with_structure
+from .query_expansion import QueryExpander
 from .answer_generator import AnswerFormatter, classify_and_preprocess
 from .schemas import AssignmentResponse, GradingResponse, ScheduleResponse
 from .premium_answer_engine import premium_engine, batch_optimizer, perf_monitor
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_API_URL = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate"
-OLLAMA_MODEL = getattr(settings, "OLLAMA_MODEL_PRIMARY", "llama3.2")
-OLLAMA_CODER_MODEL = getattr(settings, "OLLAMA_MODEL_CODER", OLLAMA_MODEL)
-_ollama_session = requests.Session()
-_ollama_session.mount("http://", HTTPAdapter(pool_connections=20, pool_maxsize=20))
-_ollama_session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20))
+GROQ_MODEL = getattr(settings, "GROQ_MODEL_PRIMARY", "llama-3.3-70b-versatile")
+GROQ_CODER_MODEL = getattr(settings, "GROQ_MODEL_CODER", GROQ_MODEL)
+_groq_client = None
 _OCR_ENGINE = None
-OLLAMA_KEEP_ALIVE = getattr(settings, "OLLAMA_KEEP_ALIVE", "30m")
-OLLAMA_NUM_CTX = int(getattr(settings, "OLLAMA_NUM_CTX", 4096))
-OLLAMA_CHAT_NUM_PREDICT = int(getattr(settings, "OLLAMA_CHAT_NUM_PREDICT", 320))
+GROQ_CHAT_MAX_TOKENS = int(getattr(settings, "GROQ_CHAT_MAX_TOKENS", 800))
 PDF_NOISE_RE = re.compile(
     r"^(page\s+\d+(\s+of\s+\d+)?|\d+\s*/\s*\d+|https?://\S+|www\.\S+|copyright\b.*)$",
     re.IGNORECASE,
@@ -372,29 +369,30 @@ def call_ollama(
     num_predict: int | None = None,
     keep_alive: str | None = None,
 ) -> str:
-    """Query the local Ollama daemon."""
-    payload = {
-        "model": model or OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "keep_alive": keep_alive or OLLAMA_KEEP_ALIVE,
-        "options": {
-            "temperature": temperature,
-            "top_p": 0.9,
-            "repeat_penalty": 1.05,
-            "num_ctx": OLLAMA_NUM_CTX,
-        },
-    }
-    if num_predict is not None:
-        payload["options"]["num_predict"] = num_predict
-    if json_schema:
-        payload["format"] = json_schema
-    elif format_json:
-        payload["format"] = "json"
+    """Compatibility wrapper: send prompt to Groq chat completions."""
+    global _groq_client
 
-    response = _ollama_session.post(OLLAMA_API_URL, json=payload, timeout=180)
-    response.raise_for_status()
-    return response.json().get("response", "")
+    api_key = getattr(settings, "GROQ_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not configured.")
+
+    if _groq_client is None:
+        _groq_client = Groq(api_key=api_key)
+
+    selected_model = model or GROQ_MODEL
+    max_tokens = num_predict or GROQ_CHAT_MAX_TOKENS
+
+    system_instruction = "Return valid JSON only." if (format_json or json_schema) else ""
+    completion = _groq_client.chat.completions.create(
+        model=selected_model,
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    return (completion.choices[0].message.content or "").strip()
 
 
 def _normalize_pdf_line(line: str) -> str:
@@ -1054,7 +1052,7 @@ Requirements:
     try:
         response_text = call_ollama(
             prompt,
-            model=OLLAMA_MODEL,
+            model=GROQ_MODEL,
             temperature=0.15,
             json_schema=schedule_schema,
             num_predict=900,
@@ -1336,7 +1334,7 @@ def generate_assignment_for_course(
 ) -> dict:
     """Generate better assignments while preserving robust fallback behavior."""
     covered_topics = covered_topics or _course_topics(course) or ["General course content"]
-    chosen_model = OLLAMA_CODER_MODEL if assignment_type == "CODING" else OLLAMA_MODEL
+    chosen_model = GROQ_CODER_MODEL if assignment_type == "CODING" else GROQ_MODEL
     assignment_schema = AssignmentResponse.model_json_schema()
     outline_excerpt = _assignment_outline_excerpt(covered_outline, covered_topics)
     question_target = _assignment_question_target(assignment_type, covered_topics)
@@ -1747,7 +1745,7 @@ Requirements:
     try:
         response_text = call_ollama(
             prompt,
-            model=OLLAMA_CODER_MODEL if assignment.type == "CODING" else OLLAMA_MODEL,
+            model=GROQ_CODER_MODEL if assignment.type == "CODING" else GROQ_MODEL,
             temperature=0.1,
             json_schema=grading_schema,
             num_predict=900,
@@ -1801,7 +1799,7 @@ def _chat_fallback_answer(course, question: str, relevant_chunks: list[str]) -> 
             excerpts.append(f"- {trimmed}")
 
     return (
-        "I could not reach the local Ollama model right now, but here are the most relevant notes "
+        "I could not reach the AI provider right now, but here are the most relevant notes "
         "from your uploaded materials:\n\n" + "\n".join(excerpts)
     )
 
@@ -1902,6 +1900,46 @@ def _extract_chat_evidence(question: str, relevant_chunks: list[str], limit: int
     return scored_passages[:limit]
 
 
+def _gather_retrieval_context(course_id: int, question: str, top_k: int = 8) -> list[str]:
+    expander = QueryExpander()
+    expanded_queries = expander.expand_query(question, max_expansions=3)
+    merged_chunks = []
+    seen = set()
+
+    per_query_k = max(4, top_k // max(len(expanded_queries), 1) + 2)
+    for query_variant in expanded_queries:
+        for chunk in search_course(course_id, query_variant, top_k=per_query_k):
+            chunk_key = (chunk or "").strip().lower()
+            if not chunk_key or chunk_key in seen:
+                continue
+            seen.add(chunk_key)
+            merged_chunks.append(chunk)
+            if len(merged_chunks) >= top_k:
+                return merged_chunks
+    return merged_chunks
+
+
+def _answer_grounding_score(answer: str, evidence: list[dict]) -> float:
+    answer_text = _normalized_text(answer)
+    if not answer_text or not evidence:
+        return 0.0
+
+    answer_tokens = set(re.findall(r"[a-z0-9]+", answer_text))
+    if not answer_tokens:
+        return 0.0
+
+    evidence_tokens = set()
+    for item in evidence:
+        evidence_tokens.update(re.findall(r"[a-z0-9]+", _normalized_text(item.get("text", ""))))
+
+    if not evidence_tokens:
+        return 0.0
+
+    overlap = len(answer_tokens.intersection(evidence_tokens))
+    coverage = overlap / max(len(answer_tokens), 1)
+    return round(coverage, 4)
+
+
 def _looks_like_fact_lookup(question: str) -> bool:
     cleaned = _normalized_text(question).strip()
     if not cleaned:
@@ -1922,7 +1960,7 @@ def _format_pdf_grounded_answer(question: str, evidence: list[dict]) -> str:
     return f"{heading}\n\n{quotes}"
 
 
-def answer_course_question(course, question: str, user=None, include_context: bool = True) -> dict:
+def answer_course_question_legacy(course, question: str, user=None, include_context: bool = True) -> dict:
     """Improved question answering with conversation context and intelligent search."""
     
     # Preprocess and classify the question
@@ -1945,6 +1983,54 @@ def answer_course_question(course, question: str, user=None, include_context: bo
         ])
     else:
         context_str = ""
+
+    if include_context and user:
+        try:
+            from apps.courses.models import StudentNotebook
+
+            notebook_context = StudentNotebook.objects.filter(
+                course=course,
+                student=user,
+            ).order_by("-updated_at")[:3]
+
+            notebook_lines = []
+            for note in notebook_context:
+                text = (note.content_text or "").strip()
+                if not text:
+                    continue
+                notebook_lines.append(f"Notebook({note.title}): {text[:220]}")
+
+            if notebook_lines:
+                context_str = (context_str + "\n" if context_str else "") + "\n".join(notebook_lines)
+        except Exception:
+            pass
+
+    def _build_sources(evidence_items: list[dict], chunks: list[str]) -> list[dict]:
+        source_payload = [{"type": "rag_search", "num_chunks": len(chunks)}]
+        materials = list(course.materials.all())
+
+        for item in evidence_items:
+            snippet = item["text"]
+            source_title = "Course Materials"
+            page_estimate = item.get("chunk_index", 0) + 1
+            for material in materials:
+                corpus = (material.content_text or "")
+                if snippet[:80] and snippet[:80] in corpus:
+                    source_title = material.title or "Uploaded Material"
+                    break
+
+            source_payload.append(
+                {
+                    "type": "citation",
+                    "snippet": snippet,
+                    "score": item.get("score"),
+                    "chunk_index": item.get("chunk_index"),
+                    "filename": source_title,
+                    "page_number": page_estimate,
+                }
+            )
+
+        return source_payload
     
     # Try intelligent search first (detects heading queries, etc.)
     search_results = intelligent_search(course.id, question, top_k=8)
@@ -1977,12 +2063,34 @@ def answer_course_question(course, question: str, user=None, include_context: bo
             ],
         }
     
-    # Fall back to evidence-based answer
+    # Fall back to evidence-based answer with expanded retrieval coverage.
+    expanded_chunks = _gather_retrieval_context(course.id, question, top_k=8)
+    if expanded_chunks:
+        if relevant_chunks:
+            merged = []
+            seen_chunks = set()
+            for chunk in [*relevant_chunks, *expanded_chunks]:
+                key = (chunk or "").strip().lower()
+                if key and key not in seen_chunks:
+                    seen_chunks.add(key)
+                    merged.append(chunk)
+            relevant_chunks = merged[:8]
+        else:
+            relevant_chunks = expanded_chunks
+
     if not relevant_chunks:
         relevant_chunks = search_course(course.id, question, top_k=6)
     
     # Extract and score evidence
     evidence = _extract_chat_evidence(question, relevant_chunks, limit=3)
+
+    # Strict guardrail: if evidence is weak, do not let the LLM guess.
+    if not evidence or evidence[0]["score"] < 0.22:
+        return {
+            "answer": "I couldn't find that exact information in the course materials.",
+            "sources": _build_sources(evidence, relevant_chunks),
+        }
+
     context_str = "\n---\n".join(relevant_chunks) if relevant_chunks else "No course materials uploaded yet."
     evidence_str = "\n".join(
         f"[{index}] {item['text']}"
@@ -1993,18 +2101,7 @@ def answer_course_question(course, question: str, user=None, include_context: bo
     if _looks_like_fact_lookup(question) and evidence and evidence[0]["score"] >= 0.55:
         return {
             "answer": _format_pdf_grounded_answer(question, evidence),
-            "sources": [
-                {"type": "rag_search", "num_chunks": len(relevant_chunks)},
-                *[
-                    {
-                        "type": "references",
-                        "snippet": item["text"],
-                        "score": item["score"],
-                        "chunk_index": item["chunk_index"],
-                    }
-                    for item in evidence
-                ],
-            ],
+            "sources": _build_sources(evidence, relevant_chunks),
         }
 
     # Use optimized prompt based on question type with conversation context
@@ -2053,139 +2150,218 @@ ANSWER:"""
         response_text = call_ollama(
             prompt,
             format_json=False,
-            model=OLLAMA_MODEL,
+            model=GROQ_MODEL,
             temperature=0.05,
-            num_predict=OLLAMA_CHAT_NUM_PREDICT,
+            num_predict=GROQ_CHAT_MAX_TOKENS,
         )
+
+        grounding_score = _answer_grounding_score(response_text, evidence)
+        if grounding_score < 0.12:
+            logger.info(
+                "Answer grounding score too low (%.3f). Falling back to strict evidence answer.",
+                grounding_score,
+            )
+            response_text = _format_pdf_grounded_answer(question, evidence)
+
         return {
             "answer": response_text,
-            "sources": [
-                {"type": "rag_search", "num_chunks": len(relevant_chunks)},
-                *[
-                    {
-                        "type": "references",
-                        "snippet": item["text"],
-                        "score": item["score"],
-                        "chunk_index": item["chunk_index"],
-                    }
-                    for item in evidence
-                ],
-            ],
+            "sources": _build_sources(evidence, relevant_chunks),
         }
     except Exception as exc:
-        logger.error("Ollama Q&A failed: %s", exc)
+        logger.error("Groq Q&A failed, using retrieval fallback: %s", exc)
         return {
             "answer": _format_pdf_grounded_answer(question, evidence) if evidence else _chat_fallback_answer(course, question, relevant_chunks),
-            "sources": [
-                {"type": "rag_search", "num_chunks": len(relevant_chunks)},
-                *[
-                    {
-                        "type": "references",
-                        "snippet": item["text"],
-                        "score": item["score"],
-                        "chunk_index": item["chunk_index"],
-                    }
-                    for item in evidence
-                ],
-            ],
+            "sources": _build_sources(evidence, relevant_chunks),
         }
 
 
 # ============ PREMIUM ANSWER GENERATION (NEW) ============
 
 
-def answer_course_question_premium(
+def answer_course_question(
     course,
     question: str,
     user=None,
     include_context: bool = True,
-    use_cache: bool = True,
+    **kwargs,
 ) -> dict:
     """
-    Premium answer generation with all enhancements:
-    - Better PDF extraction (scanned + native)
-    - Perfect source attribution
-    - Reliable prompting (non-random answers)
-    - Better semantic search
-    - Response validation
-    
-    This is the recommended function for new code.
-    Falls back to answer_course_question if issues occur.
+    Clean RAG pipeline for answering questions from uploaded course PDFs.
+
+    Flow:
+    1. Retrieve relevant chunks via hybrid search (vector + lexical)
+    2. Optionally include conversation history + student notebooks
+    3. Build a focused prompt with evidence
+    4. Call Groq LLM
+    5. Return answer + source citations
+
+    This replaces the previous over-engineered 12-layer pipeline.
     """
-    
+    # ── Step 1: Retrieve relevant chunks ──────────────────────────────
+    relevant_chunks = search_course(course.id, question, top_k=8)
+
+    # Expand query for better coverage
     try:
-        # Check cache
-        if use_cache and batch_optimizer.should_use_cached_answer(question, course.id):
-            cached = batch_optimizer.get_cached_answer(question, course.id)
-            if cached:
-                logger.info("Using cached answer")
-                return cached
-        
-        # Build conversation history if needed
-        conversation_history = None
-        if include_context and user:
+        expander = QueryExpander()
+        expanded_queries = expander.expand_query(question, max_expansions=2)
+        seen_chunks = {(c or "").strip().lower() for c in relevant_chunks}
+
+        for variant in expanded_queries[1:]:  # skip original (already searched)
+            for chunk in search_course(course.id, variant, top_k=4):
+                key = (chunk or "").strip().lower()
+                if key and key not in seen_chunks:
+                    seen_chunks.add(key)
+                    relevant_chunks.append(chunk)
+                    if len(relevant_chunks) >= 12:
+                        break
+            if len(relevant_chunks) >= 12:
+                break
+    except Exception as exc:
+        logger.warning("Query expansion failed, using base results: %s", exc)
+
+    if not relevant_chunks:
+        return {
+            "answer": "I couldn't find any relevant information in the course materials. "
+                      "Please make sure materials have been uploaded for this course.",
+            "sources": [],
+        }
+
+    # ── Step 2: Build conversation context ────────────────────────────
+    conversation_context = ""
+    if include_context and user:
+        try:
             from apps.chat.models import ChatMessage
-            recent_messages = ChatMessage.objects.filter(
+            recent = ChatMessage.objects.filter(
                 course=course, student=user
-            ).order_by('-timestamp')[:6]
-            
-            conversation_history = []
-            for msg in reversed(recent_messages):
+            ).order_by("-timestamp")[:4]
+
+            lines = []
+            for msg in reversed(recent):
                 if msg.role == "STUDENT":
-                    conversation_history.append(msg.message[:100])
+                    lines.append(f"Student: {msg.message[:120]}")
                 else:
-                    conversation_history.append(msg.ai_response[:150])
-        
-        # Create search function wrapper
-        def search_wrapper(query, top_k=10):
-            """Wrapper around search_course function."""
-            try:
-                results = search_course(course.id, query, top_k=top_k)
-                # Convert to (text, score) tuples
-                return [(r, 0.8) for r in results] if results else []
-            except Exception as e:
-                logger.error(f"Search failed: {e}")
-                return []
-        
-        # Create LLM function wrapper
-        def llm_wrapper(prompt):
-            """Wrapper around Ollama."""
-            try:
-                return call_ollama(
-                    prompt,
-                    format_json=False,
-                    model=OLLAMA_MODEL,
-                    temperature=0.05,
-                    num_predict=OLLAMA_CHAT_NUM_PREDICT,
-                )
-            except Exception as e:
-                logger.error(f"LLM generation failed: {e}")
-                return None
-        
-        # Generate premium answer
-        response = premium_engine.answer_question_premium(
-            question=question,
-            course=course,
-            user=user,
-            search_func=search_wrapper,
-            llm_func=llm_wrapper,
-            conversation_history=conversation_history,
+                    lines.append(f"AI: {(msg.ai_response or '')[:180]}")
+            if lines:
+                conversation_context = "\n".join(lines)
+        except Exception:
+            pass
+
+        # Include private student notebooks
+        try:
+            from apps.courses.models import StudentNotebook
+            notebooks = StudentNotebook.objects.filter(
+                course=course, student=user,
+            ).order_by("-updated_at")[:2]
+            for note in notebooks:
+                text = (note.content_text or "").strip()
+                if text:
+                    relevant_chunks.append(f"[Student Notes - {note.title}]: {text[:300]}")
+        except Exception:
+            pass
+
+    # ── Step 3: Build source citations ────────────────────────────────
+    materials = list(course.materials.all())
+    sources = []
+    for idx, chunk in enumerate(relevant_chunks[:8]):
+        source_title = "Course Material"
+        page_estimate = idx + 1
+        snippet_preview = (chunk or "")[:120].strip()
+
+        for material in materials:
+            corpus = material.content_text or ""
+            # Check if this chunk came from this material
+            if snippet_preview[:60] and snippet_preview[:60] in corpus:
+                source_title = material.title or "Uploaded Material"
+                # Rough page estimate based on position in text
+                pos = corpus.find(snippet_preview[:60])
+                if pos >= 0:
+                    chars_per_page = max(len(corpus) // max(1, len(corpus) // 3000), 2000)
+                    page_estimate = (pos // chars_per_page) + 1
+                break
+
+        sources.append({
+            "type": "citation",
+            "snippet": snippet_preview,
+            "filename": source_title,
+            "page_number": page_estimate,
+            "score": round(1.0 - (idx * 0.08), 2),
+        })
+
+    # ── Step 4: Build prompt ──────────────────────────────────────────
+    evidence_block = "\n\n".join(
+        f"[Source {i}]:\n{chunk}"
+        for i, chunk in enumerate(relevant_chunks[:8], 1)
+    )
+
+    conversation_section = ""
+    if conversation_context:
+        conversation_section = f"""
+RECENT CONVERSATION (for follow-up context):
+{conversation_context}
+"""
+
+    prompt = f"""You are an expert AI tutor for the course "{course.name}".
+Your job is to answer student questions using ONLY the source evidence provided below.
+
+RULES:
+1. Answer the question thoroughly and accurately using the provided sources.
+2. If the answer is clearly present in the sources, give a complete, well-structured response.
+3. Use specific details, definitions, examples, and explanations from the sources.
+4. If the information is NOT in the sources at all, say: "I couldn't find this specific information in the uploaded course materials."
+5. Do NOT make up information or use knowledge outside the provided sources.
+6. For listing questions, provide all relevant items you can find in the sources.
+7. For explanation questions, give a clear and detailed explanation based on the source content.
+8. Reference which source number supports your answer when relevant (e.g., "According to Source 1...").
+{conversation_section}
+SOURCE EVIDENCE FROM COURSE MATERIALS:
+{evidence_block}
+
+STUDENT QUESTION: {question}
+
+ANSWER:"""
+
+    # ── Step 5: Call Groq LLM ─────────────────────────────────────────
+    try:
+        response_text = call_ollama(
+            prompt,
+            format_json=False,
+            model=GROQ_MODEL,
+            temperature=0.1,
+            num_predict=min(GROQ_CHAT_MAX_TOKENS, 2048),
         )
-        
-        # Cache answer
-        batch_optimizer.cache_answer(question, course.id, response)
-        
-        # Log metrics
-        perf_monitor.log_answer(
-            processing_time_ms=response["metadata"]["processing_time_ms"],
-            confidence=response["confidence"],
-            evidence_count=response["metadata"]["evidence_count"],
-            is_cached=False,
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Premium answer generation failed: {e}. Falling back to standard.")
-        # Fallback to original function
-        return answer_course_question(course, question, user, include_context)
+
+        if not response_text or len(response_text.strip()) < 5:
+            # LLM returned empty/useless response — use best chunks directly
+            response_text = _direct_evidence_answer(question, relevant_chunks)
+
+    except Exception as exc:
+        logger.error("Groq LLM call failed: %s", exc)
+        response_text = _direct_evidence_answer(question, relevant_chunks)
+
+    return {
+        "answer": response_text,
+        "sources": sources,
+    }
+
+
+def _direct_evidence_answer(question: str, chunks: list[str]) -> str:
+    """Fallback: build an answer directly from the best retrieved chunks."""
+    if not chunks:
+        return "I couldn't find relevant information in the course materials."
+
+    excerpts = []
+    for chunk in chunks[:3]:
+        text = (chunk or "").strip()
+        if text:
+            if len(text) > 400:
+                text = text[:400] + "..."
+            excerpts.append(f"> {text}")
+
+    if not excerpts:
+        return "I couldn't find relevant information in the course materials."
+
+    return (
+        "Here is the most relevant information I found in your course materials:\n\n"
+        + "\n\n".join(excerpts)
+    )
+

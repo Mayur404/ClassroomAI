@@ -1,6 +1,14 @@
 from rest_framework import serializers
 
-from .models import ClassSchedule, Course, CourseMaterial, Enrollment, ScheduleStatus
+from .models import (
+    ClassSchedule,
+    Course,
+    CourseMaterial,
+    Enrollment,
+    ScheduleStatus,
+    StudentFlashcard,
+    StudentNotebook,
+)
 
 
 class ClassScheduleSerializer(serializers.ModelSerializer):
@@ -56,6 +64,7 @@ class CourseSerializer(serializers.ModelSerializer):
             "extracted_policies",
             "parse_metadata",
             "schedule_approved_at",
+            "invite_code",
             "created_at",
             "assignment_count",
             "completed_class_count",
@@ -72,6 +81,7 @@ class CourseSerializer(serializers.ModelSerializer):
             "extracted_policies",
             "parse_metadata",
             "schedule_approved_at",
+            "invite_code",
             "created_at",
             "assignment_count",
             "completed_class_count",
@@ -133,11 +143,64 @@ class CourseSerializer(serializers.ModelSerializer):
 
 class EnrollmentSerializer(serializers.ModelSerializer):
     student_name = serializers.CharField(source="student.name", read_only=True)
+    invite_code = serializers.CharField(write_only=True, required=False)
 
     class Meta:
         model = Enrollment
-        fields = ("id", "student", "student_name", "course", "enrolled_at")
-        read_only_fields = ("enrolled_at",)
+        fields = ("id", "student", "student_name", "course", "invite_code", "enrolled_at")
+        read_only_fields = ("enrolled_at", "student", "course")
+
+    def validate(self, attrs):
+        course = attrs.get("course")
+        invite_code = str(attrs.get("invite_code", "")).strip().upper()
+        if course is None and not invite_code:
+            raise serializers.ValidationError("Provide either course or invite_code.")
+        if course is not None and invite_code and course.invite_code != invite_code:
+            raise serializers.ValidationError("Invite code does not match selected course.")
+        if course is None and invite_code:
+            resolved = Course.objects.filter(invite_code=invite_code).first()
+            if not resolved:
+                raise serializers.ValidationError("Invalid invite code.")
+            attrs["course"] = resolved
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop("invite_code", None)
+        return super().create(validated_data)
+
+
+class StudentNotebookSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StudentNotebook
+        fields = ("id", "course", "student", "title", "content_text", "created_at", "updated_at")
+        read_only_fields = ("student", "created_at", "updated_at")
+
+
+class StudentFlashcardSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StudentFlashcard
+        fields = (
+            "id",
+            "course",
+            "student",
+            "question",
+            "answer",
+            "ease_factor",
+            "interval_days",
+            "repetitions",
+            "due_at",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = (
+            "student",
+            "ease_factor",
+            "interval_days",
+            "repetitions",
+            "due_at",
+            "created_at",
+            "updated_at",
+        )
 
 
 class SyllabusUploadSerializer(serializers.Serializer):

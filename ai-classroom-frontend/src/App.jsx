@@ -8,15 +8,18 @@ import LoginPage from "./pages/LoginPage";
 import CoursePage from "./pages/CoursePage";
 
 function ProtectedRoute({ children }) {
-  const { user } = useAuth();
+  const { user, isBootstrapping } = useAuth();
+  if (isBootstrapping) return <div className="loading-screen">Loading account...</div>;
   if (!user) return <Navigate to="/login" />;
   return children;
 }
 
 function Layout() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const [isCreating, setIsCreating] = useState(false);
   const [newCourseName, setNewCourseName] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [joinError, setJoinError] = useState("");
 
   const coursesQuery = useQuery({
     queryKey: ["courses"],
@@ -39,11 +42,32 @@ function Layout() {
     },
   });
 
+  const joinCourse = useMutation({
+    mutationFn: async (code) => {
+      const res = await client.post("/enrollments/", { invite_code: code });
+      return res.data;
+    },
+    onSuccess: () => {
+      coursesQuery.refetch();
+      setInviteCode("");
+      setJoinError("");
+    },
+    onError: (err) => {
+      setJoinError(err?.response?.data?.detail || "Could not join classroom. Check invite code.");
+    },
+  });
+
   const handleCreateCourse = (e) => {
     e.preventDefault();
     if (newCourseName.trim()) {
       createCourse.mutate(newCourseName.trim());
     }
+  };
+
+  const handleJoinCourse = (e) => {
+    e.preventDefault();
+    if (!inviteCode.trim()) return;
+    joinCourse.mutate(inviteCode.trim().toUpperCase());
   };
 
   return (
@@ -114,7 +138,7 @@ function Layout() {
                     </button>
                   </div>
                 </form>
-              ) : (
+              ) : user?.role === "TEACHER" ? (
                 <button 
                   className="btn-secondary add-course-btn"
                   onClick={() => setIsCreating(true)}
@@ -123,6 +147,20 @@ function Layout() {
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                   New Classroom
                 </button>
+              ) : (
+                <form onSubmit={handleJoinCourse} className="create-course-form stack compact">
+                  <input
+                    type="text"
+                    className="input-field"
+                    placeholder="Invite Code"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)}
+                  />
+                  <button type="submit" className="btn-secondary" disabled={!inviteCode.trim() || joinCourse.isPending}>
+                    {joinCourse.isPending ? "Joining..." : "Join Classroom"}
+                  </button>
+                  {joinError && <p className="text-muted">{joinError}</p>}
+                </form>
               )}
             </div>
           )}
@@ -132,8 +170,9 @@ function Layout() {
             <div className="user-avatar">{user.name?.[0] || "U"}</div>
             <div>
               <strong>{user.name}</strong>
-              <p>{user.email}</p>
+              <p>{user.email} • {user.role}</p>
             </div>
+            <button className="btn-secondary" onClick={logout} style={{ marginLeft: "auto", padding: "0.25rem 0.5rem" }}>Logout</button>
           </div>
         )}
       </aside>

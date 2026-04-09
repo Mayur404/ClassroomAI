@@ -24,10 +24,10 @@ export default function DashboardPage() {
       <section className="panel hero">
         <div>
           <p className="eyebrow">Welcome{user ? `, ${user.name}` : ""}</p>
-          <h2>Your Local AI Classroom</h2>
+          <h2>{user?.role === "TEACHER" ? "Teacher Workspace" : "Student Workspace"}</h2>
           <p>
             Upload PDFs, ask grounded questions, build learning paths, and generate assignments using a
-            local Ollama + RAG pipeline.
+            Groq + Sarvam + RAG pipeline.
           </p>
         </div>
         <div className="actions">

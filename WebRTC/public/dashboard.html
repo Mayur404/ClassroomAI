@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Finance Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; background: #f0f4f8;
+           min-height: 100vh; padding: 32px 16px; }
+    .container { max-width: 640px; margin: 0 auto; }
+    h1 { font-size: 24px; color: #1a1a2e; margin-bottom: 4px; }
+    .subtitle { color: #666; font-size: 14px; margin-bottom: 24px; }
+    .card { background: white; border-radius: 12px; padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 20px; }
+    .card h2 { font-size: 16px; color: #333; margin-bottom: 16px; }
+    label { font-size: 13px; font-weight: bold; color: #555;
+            display: block; margin-bottom: 4px; }
+    input { width: 100%; padding: 10px 12px; border: 1px solid #ddd;
+            border-radius: 6px; font-size: 14px; margin-bottom: 14px; }
+    input:focus { outline: none; border-color: #1a56b0; }
+    .btn-row { display: flex; gap: 12px; }
+    .btn { flex: 1; padding: 12px; border: none; border-radius: 8px;
+           font-size: 15px; cursor: pointer; font-weight: bold;
+           transition: background 0.2s; }
+    .btn-manual { background: #1a56b0; color: white; }
+    .btn-manual:hover { background: #1344a0; }
+    .btn-ai { background: #7c3aed; color: white; }
+    .btn-ai:hover { background: #6d28d9; }
+    .result-card { display: none; background: white; border-radius: 12px;
+                   padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .result-card h3 { font-size: 15px; margin-bottom: 12px; color: #333; }
+    .link-box { background: #f0f4f8; padding: 10px 14px; border-radius: 6px;
+                font-size: 13px; color: #1a56b0; word-break: break-all;
+                margin-bottom: 10px; }
+    .copy-btn { padding: 6px 14px; background: #e8f0fb; color: #1a56b0;
+                border: none; border-radius: 6px; cursor: pointer;
+                font-size: 13px; margin-bottom: 16px; }
+    .status-box { background: #f9f9f9; border-radius: 8px; padding: 14px;
+                  font-family: monospace; font-size: 12px; white-space: pre-wrap;
+                  min-height: 80px; line-height: 1.6; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 10px;
+             font-size: 12px; font-weight: bold; margin-left: 8px; }
+    .badge-manual { background: #dbeafe; color: #1a56b0; }
+    .badge-ai { background: #ede9fe; color: #7c3aed; }
+    .refresh-btn { padding: 8px 16px; background: #f0f4f8; border: none;
+                   border-radius: 6px; cursor: pointer; font-size: 13px;
+                   margin-top: 10px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Finance AI Dashboard</h1>
+  <p class="subtitle">Loan recovery call management</p>
+
+  <div class="card">
+    <h2>Customer Details</h2>
+
+    <label>Customer Name</label>
+    <input id="customerName" value="Rajesh Kumar" />
+
+    <label>Bank Name</label>
+    <input id="bankName" value="ABC Bank" />
+
+    <label>Loan Account (last 4 digits)</label>
+    <input id="loanAccount" value="4521" />
+
+    <label>Overdue Amount (₹)</label>
+    <input id="loanAmount" value="75,000" />
+
+    <label>Agent Name</label>
+    <input id="agentName" value="Priya (Agent)" />
+
+    <div class="btn-row">
+      <button class="btn btn-manual" onclick="startManualCall()">
+        📞 Manual Call
+      </button>
+      <button class="btn btn-ai" onclick="startAICall()">
+        🤖 AI Auto Call
+      </button>
+    </div>
+  </div>
+
+  <!-- Result card -->
+  <div class="result-card" id="resultCard">
+    <h3 id="resultTitle">Call Started</h3>
+
+    <div id="agentLinkSection" style="display:none">
+      <label style="margin-bottom:6px">Your link (agent):</label>
+      <div class="link-box" id="agentLink"></div>
+      <button class="copy-btn" onclick="copyLink('agentLink')">
+        📋 Copy Agent Link
+      </button>
+    </div>
+
+    <label style="margin-bottom:6px">Customer link — share this:</label>
+    <div class="link-box" id="customerLink"></div>
+    <button class="copy-btn" onclick="copyLink('customerLink')">
+      📋 Copy Customer Link
+    </button>
+
+    <div class="status-box" id="statusBox">
+      Waiting for customer to join...
+    </div>
+    <button class="refresh-btn" onclick="refreshStatus()">
+      🔄 Refresh Status
+    </button>
+  </div>
+</div>
+
+<script>
+  let currentMode = null;   // 'manual' or 'ai'
+  let currentId = null;     // roomId or sessionId
+  let statusInterval = null;
+
+  function getDetails() {
+    return {
+      customerName: document.getElementById('customerName').value,
+      bankName: document.getElementById('bankName').value,
+      loanAccount: document.getElementById('loanAccount').value,
+      loanAmount: document.getElementById('loanAmount').value,
+      agentName: document.getElementById('agentName').value
+    };
+  }
+
+  async function startManualCall() {
+    const res = await fetch('/create-manual-room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(getDetails())
+    });
+    const data = await res.json();
+    currentMode = 'manual';
+    currentId = data.roomId;
+
+    document.getElementById('resultCard').style.display = 'block';
+    document.getElementById('resultTitle').innerHTML =
+      'Manual Call Started <span class="badge badge-manual">WebRTC</span>';
+    document.getElementById('agentLinkSection').style.display = 'block';
+    document.getElementById('agentLink').textContent = data.agentLink;
+    document.getElementById('customerLink').textContent = data.customerLink;
+
+    startPolling();
+  }
+
+  async function startAICall() {
+    const res = await fetch('/create-ai-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(getDetails())
+    });
+    const data = await res.json();
+    currentMode = 'ai';
+    currentId = data.sessionId;
+
+    document.getElementById('resultCard').style.display = 'block';
+    document.getElementById('resultTitle').innerHTML =
+      'AI Auto Call Started <span class="badge badge-ai">Gemini</span>';
+    document.getElementById('agentLinkSection').style.display = 'none';
+    document.getElementById('customerLink').textContent = data.customerLink;
+
+    startPolling();
+  }
+
+  function startPolling() {
+    if (statusInterval) clearInterval(statusInterval);
+    statusInterval = setInterval(refreshStatus, 5000);
+  }
+
+  async function refreshStatus() {
+    if (!currentId) return;
+
+    const url = currentMode === 'manual'
+      ? `/room/${currentId}`
+      : `/ai-session/${currentId}`;
+
+    const res = await fetch(url);
+    const data = await res.json();
+    let text = `Status: ${data.status}\n`;
+
+    if (currentMode === 'ai') {
+      if (data.summary) {
+        text += `\n✅ CALL COMPLETE\n`;
+        text += `Reason for delay:  ${data.summary.reason_for_delay}\n`;
+        text += `Payment date:      ${data.summary.payment_date}\n`;
+        text += `Payment amount:    ${data.summary.payment_amount}\n`;
+      }
+      if (data.conversationHistory?.length > 0) {
+        text += `\n📞 CONVERSATION:\n`;
+        data.conversationHistory.forEach(m => {
+          text += `${m.role === 'model' ? '🤖 AI' : '👤 Customer'}: ${m.content}\n\n`;
+        });
+      }
+    }
+
+    if (currentMode === 'manual') {
+      if (data.transcript?.length > 0) {
+        text += `\n📝 TRANSCRIPT:\n`;
+        data.transcript.forEach(t => {
+          text += `${t.role === 'agent' ? '👔 Agent' : '👤 Customer'}: ${t.text}\n`;
+        });
+      }
+    }
+
+    document.getElementById('statusBox').textContent = text;
+  }
+
+  function copyLink(id) {
+    const text = document.getElementById(id).textContent;
+    navigator.clipboard.writeText(text);
+    alert('Link copied!');
+  }
+</script>
+</body>
+</html>

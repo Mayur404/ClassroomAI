@@ -12,4 +12,5 @@ urlpatterns = [
     path("api/", include("apps.chat.urls")),
     path("api/", include("apps.analytics.urls")),
     path("api/", include("apps.ai_service.urls")),
+    path("api/", include("apps.quizzes.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

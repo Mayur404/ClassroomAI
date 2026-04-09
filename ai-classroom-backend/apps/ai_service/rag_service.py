@@ -7,10 +7,15 @@ import logging
 import math
 import os
 import re
+import numpy as np
+
+try:
+    import faiss  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    faiss = None
 
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction
-from chromadb.utils import embedding_functions
 from django.conf import settings
 import requests
 from requests.adapters import HTTPAdapter
@@ -162,20 +167,9 @@ def get_embedding_function():
                 exc,
             )
 
-    try:
-        _embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2",
-            local_files_only=True,
-        )
-        _embedding_backend = "sentence-transformer"
-    except Exception as exc:
-        logger.warning(
-            "Falling back to hash embeddings because the local sentence-transformer "
-            "model is unavailable: %s",
-            exc,
-        )
-        _embedding_function = HashEmbeddingFunction()
-        _embedding_backend = "hash-fallback"
+    _embedding_function = HashEmbeddingFunction()
+    _embedding_backend = "hash-fallback"
+    logger.info("Using hash-fallback embeddings because no supported remote embedding backend is configured.")
 
     return _embedding_function
 
@@ -451,6 +445,14 @@ def _lexical_search_scored(course_id: int, query: str, top_k: int = 5) -> list[t
 
 
 def _vector_search_scored(course_id: int, query: str, top_k: int = 5) -> list[tuple[float, str]]:
+    from apps.courses.models import CourseMaterial
+
+    active_material_ids = set(
+        CourseMaterial.objects.filter(course_id=course_id).values_list("id", flat=True)
+    )
+    if not active_material_ids:
+        return []
+
     scored = []
     for collection_name in _get_course_collection_names(course_id):
         collection = _client.get_collection(
@@ -463,12 +465,23 @@ def _vector_search_scored(course_id: int, query: str, top_k: int = 5) -> list[tu
         results = collection.query(
             query_texts=[query],
             n_results=min(max(top_k * 2, top_k), collection.count()),
-            include=["documents", "distances"],
+            include=["documents", "distances", "metadatas"],
         )
         documents = (results.get("documents") or [[]])[0]
         distances = (results.get("distances") or [[]])[0]
+        metadatas = (results.get("metadatas") or [[]])[0]
 
         for index, document in enumerate(documents):
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            material_id = metadata.get("material_id") if isinstance(metadata, dict) else None
+            try:
+                normalized_material_id = int(material_id)
+            except (TypeError, ValueError):
+                normalized_material_id = None
+
+            if normalized_material_id is None or normalized_material_id not in active_material_ids:
+                continue
+
             distance = distances[index] if index < len(distances) else 1.0
             try:
                 score = 1.0 / (1.0 + float(distance))
@@ -494,6 +507,65 @@ def _hybrid_rank_results(vector_results: list[tuple[float, str]], lexical_result
 
     ranked = sorted(combined_scores.items(), key=lambda item: item[1], reverse=True)
     return [original_chunks[key] for key, _score in ranked[:top_k]]
+
+
+def _hash_embed_text(text: str, dimensions: int = 384) -> np.ndarray:
+    tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
+    vector = np.zeros(dimensions, dtype=np.float32)
+    if not tokens:
+        vector[0] = 1.0
+        return vector
+
+    for token in tokens:
+        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+        index = int.from_bytes(digest[:4], "big") % dimensions
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        vector[index] += sign
+
+    norm = np.linalg.norm(vector)
+    if norm > 0:
+        vector = vector / norm
+    return vector
+
+
+def _faiss_rerank_candidates(query: str, candidates: list[str], top_k: int) -> list[str]:
+    if not candidates:
+        return []
+    if faiss is None:
+        return candidates[:top_k]
+
+    try:
+        unique_candidates = []
+        seen = set()
+        for candidate in candidates:
+            key = (candidate or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique_candidates.append(candidate)
+
+        if not unique_candidates:
+            return []
+
+        candidate_matrix = np.stack([_hash_embed_text(candidate) for candidate in unique_candidates]).astype(np.float32)
+        query_vector = _hash_embed_text(query).reshape(1, -1).astype(np.float32)
+
+        dim = candidate_matrix.shape[1]
+        index = faiss.IndexFlatIP(dim)
+        index.add(candidate_matrix)
+
+        k = min(top_k, len(unique_candidates))
+        _distances, indices = index.search(query_vector, k)
+        ranked = []
+        for idx in indices[0]:
+            if idx < 0:
+                continue
+            ranked.append(unique_candidates[int(idx)])
+
+        return ranked or unique_candidates[:top_k]
+    except Exception as exc:
+        logger.warning("FAISS reranking unavailable, falling back to hybrid ranking: %s", exc)
+        return candidates[:top_k]
 
 
 def index_course_materials(course_id: int, material_id: int, text: str) -> dict:
@@ -579,12 +651,14 @@ def search_course(course_id: int, query: str, top_k: int = 5) -> list[str]:
     lexical_results = _lexical_search_scored(course_id, normalized_query, top_k=max(top_k * 2, top_k))
     hybrid_results = _hybrid_rank_results(vector_results, lexical_results, top_k=top_k)
     if hybrid_results:
-        _cache_put(_search_result_cache, cache_key, tuple(hybrid_results), SEARCH_RESULT_CACHE_LIMIT)
-        return hybrid_results
+        reranked = _faiss_rerank_candidates(normalized_query, hybrid_results, top_k=top_k)
+        _cache_put(_search_result_cache, cache_key, tuple(reranked), SEARCH_RESULT_CACHE_LIMIT)
+        return reranked
 
     fallback_results = [chunk for _, chunk in lexical_results[:top_k]]
-    _cache_put(_search_result_cache, cache_key, tuple(fallback_results), SEARCH_RESULT_CACHE_LIMIT)
-    return fallback_results
+    reranked_fallback = _faiss_rerank_candidates(normalized_query, fallback_results, top_k=top_k)
+    _cache_put(_search_result_cache, cache_key, tuple(reranked_fallback), SEARCH_RESULT_CACHE_LIMIT)
+    return reranked_fallback
 
 
 def delete_material_chunks(course_id: int, material_id: int):

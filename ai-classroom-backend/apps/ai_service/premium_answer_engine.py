@@ -194,10 +194,11 @@ class PremiumAnswerEngine:
         best_evidence = max(evidence_list, key=lambda e: e.relevance_score)
         
         # Build simple answer
-        answer = f"Based on the course materials:\n\n{best_evidence.text}"
+        answer_text_trunc = best_evidence.text[:800] + "..." if len(best_evidence.text) > 800 else best_evidence.text
+        answer = f"Based on the course materials:\n\n{answer_text_trunc}"
         
         if len(evidence_list) > 1:
-            answer += f"\n\nAdditional context from {len(evidence_list)-1} other sources."
+            answer += f"\n\n(Plus {len(evidence_list)-1} other sources)"
         
         return answer
     

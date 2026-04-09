@@ -24,18 +24,21 @@ class Settings(BaseSettings):
     # CORS
     CORS_ALLOWED_ORIGINS: str = Field(default="http://localhost:5173,http://127.0.0.1:5173")
     
-    # OLLAMA Configuration
+    # Groq Configuration (primary)
+    GROQ_API_KEY: str = Field(default="")
+    GROQ_MODEL_PRIMARY: str = Field(default="llama-3.3-70b-versatile")
+    GROQ_MODEL_CODER: str = Field(default="llama-3.3-70b-versatile")
+    GROQ_CHAT_MAX_TOKENS: int = Field(default=800)
+    GROQ_EMBED_MODEL: str = Field(default="")
+    GROQ_EMBED_BASE_URL: str = Field(default="https://api.groq.com/openai/v1")
+
+    # Sarvam Configuration (multilingual)
+    SARVAM_API_KEY: str = Field(default="")
+
+    # Optional local embedding backend only
     OLLAMA_BASE_URL: str = Field(default="http://localhost:11434")
-    OLLAMA_MODEL_PRIMARY: str = Field(default="qwen2.5:7b")
-    OLLAMA_MODEL_CODER: str = Field(default="qwen2.5-coder:7b")
     OLLAMA_EMBED_MODEL: str = Field(default="")
     OLLAMA_EMBED_KEEP_ALIVE: str = Field(default="30m")
-    OLLAMA_TIMEOUT: int = Field(default=300)
-    
-    # Gemini Configuration (optional)
-    GEMINI_API_KEY: str = Field(default="")
-    GEMINI_MODEL_PRIMARY: str = Field(default="gemini-2.5-flash")
-    GEMINI_MODEL_CODER: str = Field(default="gemini-2.5-pro")
     
     # Other services
     INSTITUTE_EMAIL_DOMAIN: str = Field(default="iiitdwd.ac.in")
@@ -74,9 +77,21 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
-# Load validated settings
-settings = Settings(_env_file=BASE_DIR.parent / ".env", _case_sensitive=False)
+# Load validated settings from repository root first, then backend-local .env as fallback.
+_root_env = BASE_DIR.parent / ".env"
+_backend_env = BASE_DIR / ".env"
+settings = Settings(_env_file=_root_env, _case_sensitive=False)
+if _backend_env.exists():
+    backend_settings = Settings(_env_file=_backend_env, _case_sensitive=False)
+    # Use backend .env only when key runtime values are missing in root .env.
+    if not (settings.SECRET_KEY or "").strip() and (backend_settings.SECRET_KEY or "").strip():
+        settings.SECRET_KEY = backend_settings.SECRET_KEY
+    if not (settings.GROQ_API_KEY or "").strip() and (backend_settings.GROQ_API_KEY or "").strip():
+        settings.GROQ_API_KEY = backend_settings.GROQ_API_KEY
+    if not (settings.SARVAM_API_KEY or "").strip() and (backend_settings.SARVAM_API_KEY or "").strip():
+        settings.SARVAM_API_KEY = backend_settings.SARVAM_API_KEY
 
 # Ensure SECRET_KEY is set for production
 if settings.ENVIRONMENT == "production" and settings.SECRET_KEY == "dev-secret-key":
@@ -85,7 +100,7 @@ if settings.ENVIRONMENT == "production" and settings.SECRET_KEY == "dev-secret-k
         "Generate with: python -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())'"
     )
 
-SECRET_KEY = settings.SECRET_KEY
+SECRET_KEY = (settings.SECRET_KEY or "").strip() or "dev-secret-key"
 DEBUG = settings.DEBUG
 ENVIRONMENT = settings.ENVIRONMENT
 ALLOWED_HOSTS = [h.strip() for h in settings.ALLOWED_HOSTS.split(",")]
@@ -103,6 +118,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django.contrib.sites",
     "corsheaders",
+    "channels",
     "rest_framework",
     "rest_framework.authtoken",
     "drf_spectacular",
@@ -116,6 +132,7 @@ INSTALLED_APPS = [
     "apps.chat",
     "apps.ai_service",
     "apps.analytics",
+    "apps.quizzes",
 ]
 
 if DEBUG:
@@ -156,6 +173,12 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
+
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
@@ -174,6 +197,9 @@ else:
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": BASE_DIR / "db.sqlite3",
+            "OPTIONS": {
+                "timeout": 30,
+            },
         }
     }
 
@@ -195,6 +221,7 @@ CSRF_COOKIE_SECURE = settings.CSRF_COOKIE_SECURE
 SECURE_HSTS_SECONDS = settings.SECURE_HSTS_SECONDS
 SECURE_HSTS_INCLUDE_SUBDOMAINS = settings.SECURE_HSTS_INCLUDE_SUBDOMAINS
 SECURE_HSTS_PRELOAD = settings.SECURE_HSTS_PRELOAD
+X_FRAME_OPTIONS = "ALLOWALL" if DEBUG else "DENY"
 
 # ============================================================================
 # INTERNATIONALIZATION
@@ -240,6 +267,7 @@ else:
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "apps.users.jwt_auth.JWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.TokenAuthentication",
     ],
@@ -393,19 +421,20 @@ LOGGING = {
 logging.config.dictConfig(LOGGING)
 
 # ============================================================================
-# SERVICE CONFIGURATION (Ollama, Gemini, etc.)
+# SERVICE CONFIGURATION (Groq, Sarvam, optional local embeddings)
 # ============================================================================
 
+GROQ_API_KEY = settings.GROQ_API_KEY
+GROQ_MODEL_PRIMARY = settings.GROQ_MODEL_PRIMARY
+GROQ_MODEL_CODER = settings.GROQ_MODEL_CODER
+GROQ_CHAT_MAX_TOKENS = settings.GROQ_CHAT_MAX_TOKENS
+GROQ_EMBED_MODEL = settings.GROQ_EMBED_MODEL
+GROQ_EMBED_BASE_URL = settings.GROQ_EMBED_BASE_URL
+SARVAM_API_KEY = settings.SARVAM_API_KEY
+
 OLLAMA_BASE_URL = settings.OLLAMA_BASE_URL
-OLLAMA_MODEL_PRIMARY = settings.OLLAMA_MODEL_PRIMARY
-OLLAMA_MODEL_CODER = settings.OLLAMA_MODEL_CODER
 OLLAMA_EMBED_MODEL = settings.OLLAMA_EMBED_MODEL
 OLLAMA_EMBED_KEEP_ALIVE = settings.OLLAMA_EMBED_KEEP_ALIVE
-OLLAMA_TIMEOUT = settings.OLLAMA_TIMEOUT
-
-GEMINI_API_KEY = settings.GEMINI_API_KEY
-GEMINI_MODEL_PRIMARY = settings.GEMINI_MODEL_PRIMARY
-GEMINI_MODEL_CODER = settings.GEMINI_MODEL_CODER
 
 INSTITUTE_EMAIL_DOMAIN = settings.INSTITUTE_EMAIL_DOMAIN
 

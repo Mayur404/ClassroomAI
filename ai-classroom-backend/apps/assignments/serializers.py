@@ -23,6 +23,7 @@ class AssignmentSerializer(serializers.ModelSerializer):
             "questions",
             "rubric",
             "answer_key",
+            "assignment_pdf",
             "due_date",
             "covered_until_class",
             "created_at",
@@ -30,7 +31,7 @@ class AssignmentSerializer(serializers.ModelSerializer):
             "grade",
             "latest_submission",
         )
-        read_only_fields = ("status", "created_at", "published_at", "grade", "latest_submission")
+        read_only_fields = ("created_at", "published_at", "grade", "latest_submission")
 
     def _latest_submission_for_request_user(self, obj):
         request = self.context.get("request")
