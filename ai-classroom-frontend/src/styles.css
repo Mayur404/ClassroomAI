@@ -923,8 +923,9 @@ input::placeholder, textarea::placeholder {
 
 .lab-two-box-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
+  align-items: start;
 }
 
 .lab-card {

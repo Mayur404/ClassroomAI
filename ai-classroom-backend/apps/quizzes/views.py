@@ -492,7 +492,9 @@ class QuizAttemptSubmitView(APIView):
         answer_rows = QuizAttemptAnswer.objects.filter(attempt=attempt).select_related("question").prefetch_related("question__options")
         for answer in answer_rows:
             max_score += 1.0
-            correct_opt = next((opt for opt in answer.question.options.all() if opt.is_correct), None)
+            options = list(answer.question.options.all())
+            correct_opt = next((opt for opt in options if opt.is_correct), None)
+            selected_opt = next((opt for opt in options if opt.option_key == answer.selected_option_key), None)
             correct_key = correct_opt.option_key if correct_opt else ""
             is_correct = bool(answer.selected_option_key and answer.selected_option_key == correct_key)
             marks = 1.0 if is_correct else 0.0
@@ -507,10 +509,21 @@ class QuizAttemptSubmitView(APIView):
                     "question_id": answer.question_id,
                     "question_text": answer.question.question_text,
                     "selected_option_key": answer.selected_option_key,
+                    "selected_option_text": selected_opt.option_text if selected_opt else "",
                     "correct_option_key": correct_key,
+                    "correct_option_text": correct_opt.option_text if correct_opt else "",
                     "is_correct": is_correct,
                     "explanation": answer.question.explanation,
                     "source_citation": answer.question.source_citation,
+                    "options": [
+                        {
+                            "option_key": opt.option_key,
+                            "option_text": opt.option_text,
+                            "is_correct": bool(opt.is_correct),
+                            "is_selected": bool(answer.selected_option_key and answer.selected_option_key == opt.option_key),
+                        }
+                        for opt in options
+                    ],
                 }
             )
 

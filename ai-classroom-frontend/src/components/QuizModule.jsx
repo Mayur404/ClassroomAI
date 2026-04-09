@@ -19,6 +19,7 @@ export default function QuizModule({ courseId, role, scheduleItems = [], presetQ
   const [attemptState, setAttemptState] = useState(null);
   const [studentAnswers, setStudentAnswers] = useState({});
   const [submitResult, setSubmitResult] = useState(null);
+  const [quizEditState, setQuizEditState] = useState(null);
 
   const [newQuestion, setNewQuestion] = useState({
     question_text: "",
@@ -122,6 +123,20 @@ export default function QuizModule({ courseId, role, scheduleItems = [], presetQ
     },
   });
 
+  const saveQuizMeta = useMutation({
+    mutationFn: async (payload) => (await client.patch(`/quizzes/${selectedQuizId}/`, payload)).data,
+    onSuccess: (data) => {
+      setQuizEditState({
+        title: data.title || "",
+        instructions: data.instructions || "",
+        time_limit_minutes: data.time_limit_minutes || "",
+        low_score_threshold: data.low_score_threshold || 60,
+      });
+      queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
+      queryClient.invalidateQueries({ queryKey: ["quiz-detail", selectedQuizId] });
+    },
+  });
+
   const saveQuestionEdit = useMutation({
     mutationFn: async ({ questionId, payload }) => (await client.patch(`/questions/${questionId}/`, payload)).data,
     onSuccess: () => {
@@ -209,9 +224,25 @@ export default function QuizModule({ courseId, role, scheduleItems = [], presetQ
     }
   }, [selectedSessionId, sessionOptions]);
 
+  useEffect(() => {
+    if (!isTeacher || !quizDetailQuery.data) return;
+    setQuizEditState({
+      title: quizDetailQuery.data.title || "",
+      instructions: quizDetailQuery.data.instructions || "",
+      time_limit_minutes: quizDetailQuery.data.time_limit_minutes || "",
+      low_score_threshold: quizDetailQuery.data.low_score_threshold || 60,
+    });
+  }, [isTeacher, quizDetailQuery.data]);
+
   const visibleQuizzes = quizzesQuery.data || [];
   const teacherQuizzes = visibleQuizzes.filter((quiz) => quiz.mode === "LIVE");
   const studentPracticeQuizzes = visibleQuizzes.filter((quiz) => quiz.mode === "PRACTICE");
+  const selectedQuiz = quizDetailQuery.data;
+  const isEditableQuiz = isTeacher && selectedQuiz && ["DRAFT", "REVIEW"].includes(String(selectedQuiz.state || ""));
+  const resultByQuestion = useMemo(
+    () => Object.fromEntries((submitResult?.results || []).map((item) => [String(item.question_id), item])),
+    [submitResult]
+  );
 
   const onEditSeed = (question) => {
     setEditByQuestion((prev) => ({
@@ -282,6 +313,33 @@ export default function QuizModule({ courseId, role, scheduleItems = [], presetQ
   };
 
   const canGenerateQuiz = scopeMode === "multiple" ? selectedSessionIds.length > 0 : !!selectedSessionId;
+  const resetQuestionEditor = (questionId) => {
+    setEditByQuestion((prev) => {
+      const next = { ...prev };
+      delete next[questionId];
+      return next;
+    });
+  };
+  const updateQuizMetaField = (field, value) => {
+    setQuizEditState((prev) => ({ ...(prev || {}), [field]: value }));
+  };
+  const buildQuestionPayload = (editState) => ({
+    question_text: editState.question_text,
+    difficulty: editState.difficulty,
+    explanation: editState.explanation,
+    options: editState.options.map((opt) => ({
+      option_key: opt.option_key,
+      option_text: opt.option_text,
+      is_correct: !!opt.is_correct,
+    })),
+  });
+  const getReviewOptionClassName = (option) => {
+    let className = "quiz-review-option";
+    if (option.is_correct) className += " is-correct";
+    if (option.is_selected && option.is_correct) className += " is-selected";
+    if (option.is_selected && !option.is_correct) className += " is-incorrect";
+    return className;
+  };
 
   return (
     <section className="panel stack compact">
