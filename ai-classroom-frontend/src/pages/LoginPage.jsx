@@ -81,12 +81,17 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
-      <section className="login-card panel">
+      <section className="login-card panel stack">
         <div className="login-header">
-          <h2>Welcome to AI-Classroom</h2>
-          <p className="text-muted">Simple auth with Student/Teacher roles</p>
+          <p className="eyebrow">AI Classroom</p>
+          <h2>{mode === "register" ? "Create your classroom identity" : "Welcome back"}</h2>
+          <p className="text-muted">
+            {mode === "register"
+              ? "Set up your teacher or student access in a couple of quick steps."
+              : "Sign in to continue into your class workspace, tutoring tools, and study flow."}
+          </p>
         </div>
-        <div className="actions" style={{ marginTop: 0 }}>
+        <div className="login-mode-switch" role="tablist" aria-label="Authentication mode">
           <button type="button" className={mode === "login" ? "btn-primary" : "btn-secondary"} onClick={() => setMode("login")}>Sign In</button>
           <button type="button" className={mode === "register" ? "btn-primary" : "btn-secondary"} onClick={() => setMode("register")}>Register</button>
         </div>
@@ -98,7 +103,7 @@ export default function LoginPage() {
               <input
                 id="name"
                 type="text"
-                placeholder=""
+                placeholder="Enter your full name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 autoFocus
@@ -110,9 +115,10 @@ export default function LoginPage() {
             <input
               id="email"
               type="email"
-              placeholder=""
+              placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              autoFocus={mode !== "register"}
             />
           </div>
           <div className="form-group">
@@ -120,7 +126,7 @@ export default function LoginPage() {
             <input
               id="password"
               type="password"
-              placeholder=""
+              placeholder={mode === "register" ? "Create a secure password" : "Enter your password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               minLength={mode === "register" ? 8 : undefined}
@@ -139,6 +145,11 @@ export default function LoginPage() {
             {loading ? "Please wait..." : mode === "register" ? "Create Account" : "Sign In"}
           </button>
         </form>
+        <p className="login-footer-note">
+          {mode === "register"
+            ? "You can switch roles later by creating the right account type for your classroom workflow."
+            : "Use the same account to keep your classes, notebooks, quizzes, and voice history in one place."}
+        </p>
       </section>
     </div>
   );

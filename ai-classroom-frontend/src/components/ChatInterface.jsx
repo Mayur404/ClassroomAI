@@ -90,6 +90,29 @@ function VoiceResponseCard({ dataUrl }) {
   );
 }
 
+function EvidenceViewer({ msg }) {
+  const [show, setShow] = useState(false);
+  const snippets = evidenceSnippets(msg.sources);
+  if (snippets.length === 0) return null;
+  
+  return (
+    <div className="bubble-evidence">
+      <div 
+        style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }} 
+        onClick={() => setShow(!show)}
+      >
+        <strong>PDF Evidence ({snippets.length})</strong>
+        <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+          {show ? "Hide ▲" : "Show ▼"}
+        </span>
+      </div>
+      {show && snippets.map((source, index) => (
+        <blockquote key={`${msg.id}-evidence-${index}`}>{source.snippet}</blockquote>
+      ))}
+    </div>
+  );
+}
+
 export default function ChatInterface({ courseId }) {
   const { messages, loading, error, askQuestion, setMessages } = useChat(courseId);
   const [input, setInput] = useState("");
@@ -321,14 +344,7 @@ export default function ChatInterface({ courseId }) {
               )}
             </div>
 
-            {msg.role === "AI" && evidenceSnippets(msg.sources).length > 0 && (
-              <div className="bubble-evidence">
-                <strong>PDF Evidence</strong>
-                {evidenceSnippets(msg.sources).map((source, index) => (
-                  <blockquote key={`${msg.id}-evidence-${index}`}>{source.snippet}</blockquote>
-                ))}
-              </div>
-            )}
+            {msg.role === "AI" && <EvidenceViewer msg={msg} />}
 
             {msg.role === "AI" && msg.voiceAudioDataUrl && (
               <VoiceResponseCard dataUrl={msg.voiceAudioDataUrl} />

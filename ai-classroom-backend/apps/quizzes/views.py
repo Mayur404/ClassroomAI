@@ -99,6 +99,40 @@ def _create_low_score_alert(attempt: QuizAttempt):
     )
 
 
+def _attempt_results_payload(attempt: QuizAttempt) -> list[dict]:
+    detailed = []
+    answer_rows = QuizAttemptAnswer.objects.filter(attempt=attempt).select_related("question").prefetch_related("question__options")
+    for answer in answer_rows:
+        options = list(answer.question.options.all())
+        correct_opt = next((opt for opt in options if opt.is_correct), None)
+        selected_opt = next((opt for opt in options if opt.option_key == answer.selected_option_key), None)
+        correct_key = correct_opt.option_key if correct_opt else ""
+        is_correct = bool(answer.selected_option_key and answer.selected_option_key == correct_key)
+        detailed.append(
+            {
+                "question_id": answer.question_id,
+                "question_text": answer.question.question_text,
+                "selected_option_key": answer.selected_option_key,
+                "selected_option_text": selected_opt.option_text if selected_opt else "",
+                "correct_option_key": correct_key,
+                "correct_option_text": correct_opt.option_text if correct_opt else "",
+                "is_correct": is_correct,
+                "explanation": answer.question.explanation,
+                "source_citation": answer.question.source_citation,
+                "options": [
+                    {
+                        "option_key": opt.option_key,
+                        "option_text": opt.option_text,
+                        "is_correct": bool(opt.is_correct),
+                        "is_selected": bool(answer.selected_option_key and answer.selected_option_key == opt.option_key),
+                    }
+                    for opt in options
+                ],
+            }
+        )
+    return detailed
+
+
 class QuizListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -113,7 +147,18 @@ class QuizListView(generics.ListAPIView):
             queryset = queryset.filter(
                 state=QuizState.PUBLISHED,
             ) | queryset.filter(mode=QuizMode.PRACTICE, creator=request.user)
-            data = QuizStudentSerializer(queryset.distinct(), many=True).data
+            queryset = queryset.distinct()
+            data = QuizStudentSerializer(queryset, many=True).data
+            quiz_ids = [item["id"] for item in data]
+            submitted_ids = set(
+                QuizAttempt.objects.filter(
+                    student=request.user,
+                    status=AttemptStatus.SUBMITTED,
+                    quiz_id__in=quiz_ids,
+                ).values_list("quiz_id", flat=True)
+            )
+            for item in data:
+                item["has_submitted"] = item["id"] in submitted_ids
         return Response(data)
 
 
@@ -288,7 +333,23 @@ class QuizDetailView(APIView):
         if quiz.mode == QuizMode.LIVE and quiz.state != QuizState.PUBLISHED:
             raise PermissionDenied("This quiz is not published yet.")
 
-        return Response(QuizStudentSerializer(quiz, context={"include_questions": True}).data)
+        payload = QuizStudentSerializer(quiz, context={"include_questions": True}).data
+        latest_attempt = QuizAttempt.objects.filter(
+            quiz=quiz,
+            student=request.user,
+            status=AttemptStatus.SUBMITTED,
+        ).order_by("-submitted_at").first()
+        if latest_attempt:
+            payload["latest_attempt"] = {
+                "attempt_id": latest_attempt.id,
+                "score": latest_attempt.score,
+                "max_score": latest_attempt.max_score,
+                "percentage": latest_attempt.percentage,
+                "submitted_at": latest_attempt.submitted_at,
+                "results": _attempt_results_payload(latest_attempt),
+            }
+
+        return Response(payload)
 
     def patch(self, request, quiz_id):
         quiz = _resolve_quiz_for_user(request.user, quiz_id)
@@ -303,6 +364,21 @@ class QuizDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+    def delete(self, request, quiz_id):
+        quiz = _resolve_quiz_for_user(request.user, quiz_id)
+
+        if request.user.role == "TEACHER":
+            if quiz.creator_id != request.user.id:
+                raise PermissionDenied("Only the quiz creator can delete this quiz.")
+            quiz.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        if quiz.mode != QuizMode.PRACTICE or quiz.creator_id != request.user.id:
+            raise PermissionDenied("Students can only delete their own practice quizzes.")
+
+        quiz.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class QuizPublishView(APIView):
@@ -419,6 +495,28 @@ class QuizAttemptStartView(APIView):
         if quiz.mode == QuizMode.PRACTICE and quiz.creator_id != request.user.id:
             return Response({"detail": "This practice quiz is private."}, status=status.HTTP_403_FORBIDDEN)
 
+        if quiz.mode == QuizMode.LIVE:
+            submitted = QuizAttempt.objects.filter(
+                quiz=quiz,
+                student=request.user,
+                status=AttemptStatus.SUBMITTED,
+            ).order_by("-submitted_at").first()
+            if submitted:
+                quiz_payload = QuizStudentSerializer(quiz, context={"include_questions": True}).data
+                return Response(
+                    {
+                        "attempt_id": submitted.id,
+                        "quiz": quiz_payload,
+                        "status": submitted.status,
+                        "score": submitted.score,
+                        "max_score": submitted.max_score,
+                        "percentage": submitted.percentage,
+                        "feedback_released": submitted.feedback_released,
+                        "results": _attempt_results_payload(submitted),
+                        "locked": True,
+                    }
+                )
+
         existing = QuizAttempt.objects.filter(
             quiz=quiz,
             student=request.user,
@@ -487,8 +585,6 @@ class QuizAttemptSubmitView(APIView):
 
         score = 0.0
         max_score = 0.0
-        detailed = []
-
         answer_rows = QuizAttemptAnswer.objects.filter(attempt=attempt).select_related("question").prefetch_related("question__options")
         for answer in answer_rows:
             max_score += 1.0
@@ -503,29 +599,6 @@ class QuizAttemptSubmitView(APIView):
             answer.is_correct = is_correct
             answer.marks_awarded = marks
             answer.save(update_fields=["is_correct", "marks_awarded", "updated_at"])
-
-            detailed.append(
-                {
-                    "question_id": answer.question_id,
-                    "question_text": answer.question.question_text,
-                    "selected_option_key": answer.selected_option_key,
-                    "selected_option_text": selected_opt.option_text if selected_opt else "",
-                    "correct_option_key": correct_key,
-                    "correct_option_text": correct_opt.option_text if correct_opt else "",
-                    "is_correct": is_correct,
-                    "explanation": answer.question.explanation,
-                    "source_citation": answer.question.source_citation,
-                    "options": [
-                        {
-                            "option_key": opt.option_key,
-                            "option_text": opt.option_text,
-                            "is_correct": bool(opt.is_correct),
-                            "is_selected": bool(answer.selected_option_key and answer.selected_option_key == opt.option_key),
-                        }
-                        for opt in options
-                    ],
-                }
-            )
 
         percentage = round((score / max_score) * 100, 2) if max_score else 0.0
         attempt.status = AttemptStatus.SUBMITTED
@@ -547,6 +620,8 @@ class QuizAttemptSubmitView(APIView):
 
         if attempt.quiz.mode == QuizMode.LIVE:
             _create_low_score_alert(attempt)
+
+        detailed = _attempt_results_payload(attempt)
 
         return Response(
             {

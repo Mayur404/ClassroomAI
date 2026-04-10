@@ -19,7 +19,22 @@ export default function CoursePage() {
   const [answers, setAnswers] = useState({});
   const [results, setResults] = useState({});
   const [precheckResults, setPrecheckResults] = useState({});
-  const [labTopic, setLabTopic] = useState("");
+  const [materialPreviewById, setMaterialPreviewById] = useState({});
+  const [classworkQuizSessionId, setClassworkQuizSessionId] = useState(null);
+  const [classworkQuizTitle, setClassworkQuizTitle] = useState("");
+  const [classworkQuizInstructions, setClassworkQuizInstructions] = useState("");
+  const [activeTeacherQuizId, setActiveTeacherQuizId] = useState(null);
+  const [teacherQuizEditMode, setTeacherQuizEditMode] = useState(false);
+  const [quizMetaDraft, setQuizMetaDraft] = useState({ title: "", instructions: "" });
+  const [quizQuestionDrafts, setQuizQuestionDrafts] = useState({});
+  const [activeLiveQuizId, setActiveLiveQuizId] = useState(null);
+  const [liveAttemptState, setLiveAttemptState] = useState(null);
+  const [liveQuizAnswers, setLiveQuizAnswers] = useState({});
+  const [liveQuizResult, setLiveQuizResult] = useState(null);
+  const [liveQuizSubmissionById, setLiveQuizSubmissionById] = useState({});
+  const [labViewType, setLabViewType] = useState(null);
+  const [practiceQuizName, setPracticeQuizName] = useState("");
+  const [practiceQuestionCount, setPracticeQuestionCount] = useState(8);
   const [labScopeMode, setLabScopeMode] = useState("single");
   const [labSelectedModules, setLabSelectedModules] = useState([]);
   const [labGeneratedQuizId, setLabGeneratedQuizId] = useState(null);
@@ -27,9 +42,11 @@ export default function CoursePage() {
   const [labAttemptState, setLabAttemptState] = useState(null);
   const [labQuizAnswers, setLabQuizAnswers] = useState({});
   const [labQuizResult, setLabQuizResult] = useState(null);
+  const [practiceQuizHistory, setPracticeQuizHistory] = useState({});
   const [flashcardResults, setFlashcardResults] = useState([]);
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [flashcardReveal, setFlashcardReveal] = useState(false);
+  const [showQR, setShowQR] = useState(false);
   const [editingAssignmentId, setEditingAssignmentId] = useState(null);
   const [draftEdit, setDraftEdit] = useState({});
   const [manualAssignment, setManualAssignment] = useState({
@@ -54,7 +71,10 @@ export default function CoursePage() {
     if (labSelectedModules.length === 0) {
       setLabSelectedModules([modules[0].id]);
     }
-  }, [courseQuery.data, labSelectedModules.length]);
+    if (!classworkQuizSessionId) {
+      setClassworkQuizSessionId(modules[0].id);
+    }
+  }, [courseQuery.data, classworkQuizSessionId, labSelectedModules.length]);
 
   const assignmentsQuery = useQuery({
     queryKey: ["assignments", courseId],
@@ -159,6 +179,101 @@ export default function CoursePage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["assignments", courseId] }),
   });
 
+  const deleteQuiz = useMutation({
+    mutationFn: async (quizId) => {
+      await client.delete(`/quizzes/${quizId}/`);
+      return quizId;
+    },
+    onSuccess: (quizId) => {
+      queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
+      if (activeTeacherQuizId === quizId) {
+        setActiveTeacherQuizId(null);
+        setTeacherQuizEditMode(false);
+      }
+      if (activeLiveQuizId === quizId) {
+        setActiveLiveQuizId(null);
+        setLiveAttemptState(null);
+        setLiveQuizAnswers({});
+        setLiveQuizResult(null);
+      }
+      if (labActiveQuizId === quizId) {
+        setLabActiveQuizId(null);
+        setLabAttemptState(null);
+        setLabQuizAnswers({});
+        setLabQuizResult(null);
+      }
+      setPracticeQuizHistory((prev) => {
+        const next = { ...prev };
+        delete next[quizId];
+        return next;
+      });
+      setLiveQuizSubmissionById((prev) => {
+        const next = { ...prev };
+        delete next[quizId];
+        return next;
+      });
+    },
+  });
+
+  const generateTeacherQuizDraft = useMutation({
+    mutationFn: async () => {
+      const modules = courseQuery.data?.schedule_items || [];
+      const fallbackSessionId = modules[0]?.id;
+      const sessionId = classworkQuizSessionId || fallbackSessionId;
+      if (!sessionId) {
+        throw new Error("No module found for quiz generation.");
+      }
+
+      return (
+        await client.post(`/courses/${courseId}/sessions/${sessionId}/quizzes/generate/`, {
+          title: classworkQuizTitle.trim() || undefined,
+          instructions: classworkQuizInstructions.trim(),
+          question_count: 8,
+          module_scope: "single",
+          session_ids: [sessionId],
+          include_all_modules: false,
+        })
+      ).data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
+      setActiveTeacherQuizId(null);
+      setTeacherQuizEditMode(false);
+      setClassworkQuizTitle("");
+      setClassworkQuizInstructions("");
+    },
+  });
+
+  const updateTeacherQuizMeta = useMutation({
+    mutationFn: async ({ quizId, payload }) => (await client.patch(`/quizzes/${quizId}/`, payload)).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
+      if (activeTeacherQuizId) {
+        queryClient.invalidateQueries({ queryKey: ["teacher-quiz-detail", activeTeacherQuizId] });
+      }
+    },
+  });
+
+  const updateTeacherQuizQuestion = useMutation({
+    mutationFn: async ({ questionId, payload }) => (await client.patch(`/questions/${questionId}/`, payload)).data,
+    onSuccess: () => {
+      if (activeTeacherQuizId) {
+        queryClient.invalidateQueries({ queryKey: ["teacher-quiz-detail", activeTeacherQuizId] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
+    },
+  });
+
+  const publishTeacherQuiz = useMutation({
+    mutationFn: async (quizId) => (await client.post(`/quizzes/${quizId}/publish/`)).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
+      if (activeTeacherQuizId) {
+        queryClient.invalidateQueries({ queryKey: ["teacher-quiz-detail", activeTeacherQuizId] });
+      }
+    },
+  });
+
   const generatePracticeQuizFromLab = useMutation({
     mutationFn: async () => {
       const scheduleItems = courseQuery.data?.schedule_items || [];
@@ -176,16 +291,17 @@ export default function CoursePage() {
 
       return (
         await client.post(`/courses/${courseId}/sessions/${anchorSessionId}/practice-quizzes/generate/`, {
-          question_count: 8,
+          question_count: Number(practiceQuestionCount) || 8,
           module_scope: labScopeMode,
           include_all_modules: false,
           session_ids: activeIds,
-          title: labTopic.trim() ? `Practice: ${labTopic.trim()}` : "Practice Quiz",
+          title: practiceQuizName.trim() || `Practice Quiz ${studentPracticeQuizzes.length + 1}`,
         })
       ).data;
     },
     onSuccess: (data) => {
       setLabGeneratedQuizId(data?.id || null);
+      setPracticeQuizName("");
       queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
     },
   });
@@ -253,8 +369,15 @@ export default function CoursePage() {
 
   const hasMaterials = (courseQuery.data?.materials || []).length > 0;
   const moduleItems = courseQuery.data?.schedule_items || [];
-  const teacherPublishedQuizzes = (quizzesQuery.data || []).filter((quiz) => quiz.mode === "LIVE" && quiz.state === "PUBLISHED");
+  const teacherLiveQuizzes = (quizzesQuery.data || []).filter((quiz) => quiz.mode === "LIVE");
+  const teacherPublishedQuizzes = teacherLiveQuizzes.filter((quiz) => quiz.state === "PUBLISHED");
   const studentPracticeQuizzes = (quizzesQuery.data || []).filter((quiz) => quiz.mode === "PRACTICE");
+  const studentCount = (peopleQuery.data?.students || []).length;
+  const materialCount = courseQuery.data?.materials?.length || 0;
+  const assignmentCount = assignmentsQuery.data?.length || 0;
+  const moduleCount = moduleItems.length;
+  const activeInviteCode = peopleQuery.data?.invite_code || courseQuery.data?.invite_code || "------";
+  const teacherInitial = (peopleQuery.data?.teacher?.name || user?.name || "T").trim().charAt(0).toUpperCase() || "T";
 
   const labQuizDetailQuery = useQuery({
     queryKey: ["lab-quiz-detail", labActiveQuizId],
@@ -262,11 +385,28 @@ export default function CoursePage() {
     enabled: isStudent && !!labActiveQuizId,
   });
 
+  const teacherQuizDetailQuery = useQuery({
+    queryKey: ["teacher-quiz-detail", activeTeacherQuizId],
+    queryFn: async () => (await client.get(`/quizzes/${activeTeacherQuizId}/`)).data,
+    enabled: isTeacher && !!activeTeacherQuizId,
+  });
+
+  const liveQuizDetailQuery = useQuery({
+    queryKey: ["live-quiz-detail", activeLiveQuizId],
+    queryFn: async () => (await client.get(`/quizzes/${activeLiveQuizId}/`)).data,
+    enabled: isStudent && !!activeLiveQuizId,
+  });
+
+  const teacherSelectedQuiz = teacherQuizDetailQuery.data || null;
+  const teacherSelectedQuizPublished = teacherSelectedQuiz?.state === "PUBLISHED";
+
   const startLabAttempt = useMutation({
     mutationFn: async (quizId) => (await client.post(`/quizzes/${quizId}/attempts/start/`, {})).data,
     onSuccess: (data) => {
+      const quizId = data?.quiz?.id;
+      const previous = quizId ? practiceQuizHistory[quizId] : null;
       setLabAttemptState(data);
-      setLabQuizAnswers({});
+      setLabQuizAnswers(previous?.answers || {});
       setLabQuizResult(null);
     },
   });
@@ -277,7 +417,71 @@ export default function CoursePage() {
       return (await client.post(`/attempts/${labAttemptState.attempt_id}/submit/`, { answers: labQuizAnswers })).data;
     },
     onSuccess: (data) => {
+      if (labActiveQuizId) {
+        setPracticeQuizHistory((prev) => ({
+          ...prev,
+          [labActiveQuizId]: {
+            result: data,
+            answers: { ...labQuizAnswers },
+          },
+        }));
+      }
       setLabQuizResult(data);
+      queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
+    },
+  });
+
+  const startClassworkLiveAttempt = useMutation({
+    mutationFn: async (quizId) => (await client.post(`/quizzes/${quizId}/attempts/start/`, {})).data,
+    onSuccess: (data) => {
+      const isSubmitted = data?.status === "SUBMITTED";
+      const resultPayload = isSubmitted
+        ? {
+            score: data?.score ?? 0,
+            max_score: data?.max_score ?? 0,
+            percentage: data?.percentage ?? 0,
+            results: data?.results || [],
+          }
+        : null;
+
+      const answerMap = {};
+      (resultPayload?.results || []).forEach((item) => {
+        answerMap[String(item.question_id)] = item.selected_option_key || "";
+      });
+
+      const quizId = data?.quiz?.id;
+      if (quizId) {
+        setLiveQuizSubmissionById((prev) => ({
+          ...prev,
+          [quizId]: isSubmitted,
+        }));
+      }
+
+      setLiveAttemptState(data);
+      setLiveQuizAnswers(answerMap);
+      setLiveQuizResult(resultPayload);
+    },
+  });
+
+  const submitClassworkLiveAttempt = useMutation({
+    mutationFn: async () => {
+      if (!liveAttemptState?.attempt_id) throw new Error("No active live quiz attempt.");
+      return (await client.post(`/attempts/${liveAttemptState.attempt_id}/submit/`, { answers: liveQuizAnswers })).data;
+    },
+    onSuccess: (data) => {
+      const answerMap = {};
+      (data?.results || []).forEach((item) => {
+        answerMap[String(item.question_id)] = item.selected_option_key || "";
+      });
+      if (activeLiveQuizId) {
+        setLiveQuizSubmissionById((prev) => ({
+          ...prev,
+          [activeLiveQuizId]: true,
+        }));
+      }
+      setLiveAttemptState((prev) => (prev ? { ...prev, status: "SUBMITTED" } : prev));
+      setLiveQuizAnswers(answerMap);
+      setLiveQuizResult(data);
       queryClient.invalidateQueries({ queryKey: ["quizzes", courseId] });
     },
   });
@@ -294,12 +498,174 @@ export default function CoursePage() {
     }
   }, [labActiveQuizId, studentPracticeQuizzes]);
 
+  useEffect(() => {
+    if (!isStudent) return;
+    if (teacherPublishedQuizzes.length === 0) {
+      setActiveLiveQuizId(null);
+      setLiveAttemptState(null);
+      setLiveQuizAnswers({});
+      setLiveQuizResult(null);
+      return;
+    }
+
+    const quizStillAvailable = teacherPublishedQuizzes.some((quiz) => quiz.id === activeLiveQuizId);
+    if (!activeLiveQuizId || !quizStillAvailable) {
+      setActiveLiveQuizId(teacherPublishedQuizzes[0].id);
+      setLiveAttemptState(null);
+      setLiveQuizAnswers({});
+      setLiveQuizResult(null);
+    }
+  }, [activeLiveQuizId, isStudent, teacherPublishedQuizzes]);
+
+  useEffect(() => {
+    if (!activeLiveQuizId) return;
+    setLiveAttemptState(null);
+    setLiveQuizAnswers({});
+    setLiveQuizResult(null);
+  }, [activeLiveQuizId]);
+
+  useEffect(() => {
+    if (!isStudent) return;
+    const nextMap = {};
+    teacherPublishedQuizzes.forEach((quiz) => {
+      nextMap[quiz.id] = Boolean(quiz.has_submitted);
+    });
+    setLiveQuizSubmissionById((prev) => ({ ...prev, ...nextMap }));
+  }, [isStudent, teacherPublishedQuizzes]);
+
+  useEffect(() => {
+    if (!isTeacher || !activeTeacherQuizId) return;
+    const exists = teacherLiveQuizzes.some((quiz) => quiz.id === activeTeacherQuizId);
+    if (!exists) {
+      setActiveTeacherQuizId(null);
+      setTeacherQuizEditMode(false);
+    }
+  }, [activeTeacherQuizId, isTeacher, teacherLiveQuizzes]);
+
+  useEffect(() => {
+    setTeacherQuizEditMode(false);
+  }, [activeTeacherQuizId]);
+
+  useEffect(() => {
+    const quiz = teacherQuizDetailQuery.data;
+    if (!quiz) return;
+
+    setQuizMetaDraft({
+      title: quiz.title || "",
+      instructions: quiz.instructions || "",
+    });
+
+    const questionDraftMap = {};
+    (quiz.questions || []).forEach((question) => {
+      questionDraftMap[question.id] = {
+        question_text: question.question_text || "",
+        difficulty: question.difficulty || "MEDIUM",
+        options: (question.options || []).map((option) => ({
+          id: option.id,
+          option_key: String(option.option_key || "").toUpperCase(),
+          option_text: option.option_text || "",
+          is_correct: Boolean(option.is_correct),
+        })),
+      };
+    });
+    setQuizQuestionDrafts(questionDraftMap);
+  }, [teacherQuizDetailQuery.data]);
+
+  useEffect(() => {
+    if (!labActiveQuizId) return;
+    const latest = labQuizDetailQuery.data?.latest_attempt;
+    if (!latest) return;
+
+    const rememberedAnswers = {};
+    (latest.results || []).forEach((item) => {
+      rememberedAnswers[String(item.question_id)] = item.selected_option_key || "";
+    });
+
+    const rememberedResult = {
+      score: latest.score,
+      max_score: latest.max_score,
+      percentage: latest.percentage,
+      results: latest.results || [],
+    };
+
+    setPracticeQuizHistory((prev) => ({
+      ...prev,
+      [labActiveQuizId]: {
+        result: rememberedResult,
+        answers: rememberedAnswers,
+      },
+    }));
+
+    if (!labAttemptState && !labQuizResult) {
+      setLabQuizAnswers(rememberedAnswers);
+      setLabQuizResult(rememberedResult);
+    }
+  }, [labActiveQuizId, labAttemptState, labQuizDetailQuery.data, labQuizResult]);
+
   const materialViewUrl = (filePath) => {
     if (!filePath) return "";
     if (String(filePath).startsWith("http://") || String(filePath).startsWith("https://")) return filePath;
     const apiBase = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
     const apiOrigin = new URL(apiBase).origin;
     return `${apiOrigin}${filePath}`;
+  };
+
+  const materialKind = (url) => {
+    const lower = String(url || "").toLowerCase();
+    if (lower.endsWith(".pdf")) return "pdf";
+    if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].some((ext) => lower.endsWith(ext))) return "image";
+    if ([".mp4", ".webm", ".ogg", ".mov", ".m4v"].some((ext) => lower.endsWith(ext))) return "video";
+    if ([".mp3", ".wav", ".m4a", ".aac", ".ogg"].some((ext) => lower.endsWith(ext))) return "audio";
+    if ([".txt", ".md"].some((ext) => lower.endsWith(ext))) return "text";
+    return "file";
+  };
+
+  const toggleMaterialPreview = (materialId) => {
+    setMaterialPreviewById((prev) => ({
+      ...prev,
+      [materialId]: !prev[materialId],
+    }));
+  };
+
+  const renderMaterialPreview = (material, materialUrl) => {
+    const kind = materialKind(materialUrl);
+    const textPreview = String(material?.content_text || "").trim();
+
+    if (!materialUrl) {
+      return textPreview ? <pre className="material-preview-text">{textPreview.slice(0, 4000)}</pre> : <p className="text-muted">No preview available.</p>;
+    }
+
+    if (kind === "pdf" || kind === "file") {
+      return (
+        <iframe
+          src={materialUrl}
+          title={`Preview ${material?.title || "material"}`}
+          className="material-preview-frame"
+        />
+      );
+    }
+
+    if (kind === "image") {
+      return <img src={materialUrl} alt={material?.title || "Material preview"} className="material-preview-image" />;
+    }
+
+    if (kind === "video") {
+      return <video src={materialUrl} controls className="material-preview-video" />;
+    }
+
+    if (kind === "audio") {
+      return <audio src={materialUrl} controls className="material-preview-audio" />;
+    }
+
+    return textPreview ? <pre className="material-preview-text">{textPreview.slice(0, 4000)}</pre> : <p className="text-muted">No preview available.</p>;
+  };
+
+  const updateQuizDraftQuestion = (questionId, updater) => {
+    setQuizQuestionDrafts((prev) => {
+      const current = prev[questionId] || { question_text: "", difficulty: "MEDIUM", options: [] };
+      const next = typeof updater === "function" ? updater(current) : { ...current, ...updater };
+      return { ...prev, [questionId]: next };
+    });
   };
 
   const syncCourse = (courseData) => {
@@ -377,26 +743,53 @@ export default function CoursePage() {
   return (
     <div className="classroom-layout">
       <div className="classroom-main stack">
-        <section className="panel hero compact" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <p className="eyebrow">My Classroom</p>
-            <h2>{courseQuery.data?.name || "AI Learning Space"}</h2>
-            {courseQuery.data?.description && <p className="text-muted">{courseQuery.data.description}</p>}
+        <section className="panel hero compact classroom-hero">
+          <div className="classroom-hero-main">
+            <div className="classroom-hero-copy">
+              <p className="eyebrow">My Classroom</p>
+              <h2>{courseQuery.data?.name || "AI Learning Space"}</h2>
+              <p className="classroom-hero-description">
+                {courseQuery.data?.description || "A focused classroom hub for materials, assignments, quizzes, and AI-supported learning."}
+              </p>
+            </div>
+            <div className="classroom-hero-actions">
+              <div className="classroom-hero-code">
+                <span className="classroom-hero-code-label">Invite Code</span>
+                <strong>{activeInviteCode}</strong>
+              </div>
+              {isTeacher && (
+                <button
+                  className="btn-secondary text-danger classroom-danger-btn"
+                  disabled={deleteCourse.isPending}
+                  onClick={() => {
+                    if (window.confirm("Delete this classroom permanently?")) {
+                      deleteCourse.mutate();
+                    }
+                  }}
+                >
+                  {deleteCourse.isPending ? "Deleting..." : "Delete Classroom"}
+                </button>
+              )}
+            </div>
           </div>
-          {isTeacher && (
-            <button
-              className="btn-secondary text-danger"
-              style={{ padding: "0.4rem 0.75rem", fontSize: "0.8rem", borderColor: "rgba(239, 68, 68, 0.3)" }}
-              disabled={deleteCourse.isPending}
-              onClick={() => {
-                if (window.confirm("Delete this classroom permanently?")) {
-                  deleteCourse.mutate();
-                }
-              }}
-            >
-              {deleteCourse.isPending ? "Deleting..." : "Delete Classroom"}
-            </button>
-          )}
+          <div className="classroom-hero-stats">
+            <div className="classroom-stat-card">
+              <span>Students</span>
+              <strong>{studentCount}</strong>
+            </div>
+            <div className="classroom-stat-card">
+              <span>Materials</span>
+              <strong>{materialCount}</strong>
+            </div>
+            <div className="classroom-stat-card">
+              <span>Modules</span>
+              <strong>{moduleCount}</strong>
+            </div>
+            <div className="classroom-stat-card">
+              <span>Assignments</span>
+              <strong>{assignmentCount}</strong>
+            </div>
+          </div>
         </section>
 
         <div className="tab-bar">
@@ -418,47 +811,86 @@ export default function CoursePage() {
               <h3>Classroom Stream</h3>
               <span className="chip">{courseQuery.data?.materials?.length || 0} materials</span>
             </div>
-            <div className="panel compact">
-              <p className="eyebrow">Classroom Code</p>
-              <h3 style={{ marginBottom: "0.5rem" }}>{peopleQuery.data?.invite_code || courseQuery.data?.invite_code || "------"}</h3>
-              <div className="actions">
-                <button className="btn-secondary" onClick={() => navigator.clipboard.writeText(peopleQuery.data?.invite_code || courseQuery.data?.invite_code || "")}>Copy Code</button>
-                {isTeacher && (
-                  <button className="btn-secondary" onClick={() => rotateInviteCode.mutate()} disabled={rotateInviteCode.isPending}>
-                    {rotateInviteCode.isPending ? "Rotating..." : "Rotate Code"}
-                  </button>
+            <div className="stream-top-grid">
+              <div className="panel compact stream-code-panel">
+                <p className="eyebrow">Classroom Code</p>
+                <h3 className="stream-code-value">{activeInviteCode}</h3>
+                <p className="text-muted">Share this code with students so they can join the classroom instantly.</p>
+                <div className="actions">
+                  <button className="btn-secondary" onClick={() => navigator.clipboard.writeText(activeInviteCode)}>Copy Code</button>
+                  {isTeacher && (
+                    <button className="btn-secondary" onClick={() => rotateInviteCode.mutate()} disabled={rotateInviteCode.isPending}>
+                      {rotateInviteCode.isPending ? "Rotating..." : "Rotate Code"}
+                    </button>
+                  )}
+                  {isTeacher && (
+                    <button className="btn-secondary" onClick={() => setShowQR(!showQR)}>
+                      {showQR ? "Hide QR" : "Show QR Code"}
+                    </button>
+                  )}
+                </div>
+                {isTeacher && showQR && (
+                  <div style={{ marginTop: '1rem', textAlign: 'center', background: '#fff', padding: '1rem', borderRadius: '8px' }}>
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(activeInviteCode)}`} 
+                      alt={`QR for ${activeInviteCode}`} 
+                    />
+                  </div>
                 )}
               </div>
             </div>
 
             {hasMaterials && (
-              <div className="material-list stack compact">
-                {courseQuery.data.materials.map((mat) => (
-                  <div key={mat.id} className="material-card">
-                    <div className="material-info">
-                      <strong>{mat.title}</strong>
-                      {isTeacher && (
-                        <span className={`chip status-${mat.parse_status?.toLowerCase() || "pending"}`}>
-                          {mat.parse_status || "Parsed"}
-                        </span>
-                      )}
-                    </div>
-                    {isTeacher && (
-                      <button
-                        className="btn-icon text-danger"
-                        title="Delete Material"
-                        onClick={() => {
-                          if (window.confirm(`Remove "${mat.title}"?`)) {
-                            deleteMaterial.mutate(mat.id);
-                          }
-                        }}
-                        disabled={deleteMaterial.isPending && deleteMaterial.variables === mat.id}
-                      >
-                        {deleteMaterial.isPending && deleteMaterial.variables === mat.id ? "..." : "✕"}
-                      </button>
-                    )}
-                  </div>
-                ))}
+              <div className="stream-material-grid">
+                {courseQuery.data.materials.map((mat) => {
+                  const materialUrl = materialViewUrl(mat.file);
+                  const isPdf = materialUrl.toLowerCase().endsWith(".pdf");
+
+                  return (
+                    <article key={mat.id} className="stream-material-card">
+                      <div className="stream-material-main">
+                        <div className="stream-material-topline">
+                          <span className="stream-material-type">{isPdf ? "PDF" : "Material"}</span>
+                          {isTeacher && (
+                            <span className={`chip status-${mat.parse_status?.toLowerCase() || "pending"}`}>
+                              {mat.parse_status || "Parsed"}
+                            </span>
+                          )}
+                        </div>
+                        <strong>{mat.title}</strong>
+                        <p className="text-muted">
+                          {materialUrl
+                            ? "Ready for preview, download, and AI retrieval."
+                            : "Saved as a text-only classroom resource."}
+                        </p>
+                      </div>
+                      <div className="stream-material-actions">
+                        {materialUrl ? (
+                          <>
+                            <a className="btn-secondary" href={materialUrl} target="_blank" rel="noreferrer">Open</a>
+                            <a className="btn-secondary" href={materialUrl} download>Download</a>
+                          </>
+                        ) : (
+                          <span className="chip">TEXT</span>
+                        )}
+                        {isTeacher && (
+                          <button
+                            className="btn-secondary text-danger"
+                            title="Delete Material"
+                            onClick={() => {
+                              if (window.confirm(`Remove "${mat.title}"?`)) {
+                                deleteMaterial.mutate(mat.id);
+                              }
+                            }}
+                            disabled={deleteMaterial.isPending && deleteMaterial.variables === mat.id}
+                          >
+                            {deleteMaterial.isPending && deleteMaterial.variables === mat.id ? "Removing..." : "Delete"}
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
 
@@ -485,11 +917,13 @@ export default function CoursePage() {
                 <div className="material-list stack compact">
                   {courseQuery.data.materials.map((mat) => {
                     const materialUrl = materialViewUrl(mat.file);
-                    const isPdf = materialUrl.toLowerCase().endsWith(".pdf");
+                    const typeLabel = materialKind(materialUrl).toUpperCase();
+                    const isPreviewOpen = Boolean(materialPreviewById[mat.id]);
                     return (
                       <div key={mat.id} className="material-card stack compact" style={{ alignItems: "stretch" }}>
                         <div className="material-info">
                           <strong>{mat.title}</strong>
+                          <span className="chip">{typeLabel}</span>
                           {isTeacher && (
                             <span className={`chip status-${mat.parse_status?.toLowerCase() || "pending"}`}>
                               {mat.parse_status || "Parsed"}
@@ -497,21 +931,22 @@ export default function CoursePage() {
                           )}
                         </div>
                         <div className="actions">
+                          <button className="btn-secondary" onClick={() => toggleMaterialPreview(mat.id)}>
+                            {isPreviewOpen ? "Hide Preview" : "Show Preview"}
+                          </button>
                           {materialUrl ? (
                             <>
-                              <a className="btn-secondary" href={materialUrl} target="_blank" rel="noreferrer">View</a>
+                              <a className="btn-secondary" href={materialUrl} target="_blank" rel="noreferrer">View File</a>
                               <a className="btn-secondary" href={materialUrl} download>Download</a>
                             </>
                           ) : (
                             <span className="text-muted">Text-only material</span>
                           )}
                         </div>
-                        {isPdf && (
-                          <iframe
-                            src={materialUrl}
-                            title={`Preview ${mat.title}`}
-                            style={{ width: "100%", height: "360px", border: "1px solid rgba(148,163,184,0.25)", borderRadius: "0.75rem" }}
-                          />
+                        {isPreviewOpen && (
+                          <div className="material-preview-wrap">
+                            {renderMaterialPreview(mat, materialUrl)}
+                          </div>
                         )}
                       </div>
                     );
@@ -519,6 +954,308 @@ export default function CoursePage() {
                 </div>
               )}
             </section>
+
+            {isTeacher && (
+              <section className="panel stack compact">
+                <div className="section-header">
+                  <h3>Teacher Quizzes</h3>
+                  <span className="chip">{teacherLiveQuizzes.length} total</span>
+                </div>
+
+                <div className="quiz-create-bar">
+                  <p className="text-muted">Create an AI-generated quiz draft, adjust questions/options, then publish for students.</p>
+                  <div className="actions">
+                    <select
+                      value={classworkQuizSessionId || ""}
+                      onChange={(e) => setClassworkQuizSessionId(Number(e.target.value))}
+                    >
+                      {moduleItems.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          Class {item.class_number}: {item.topic}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      className="input-field"
+                      value={classworkQuizTitle}
+                      onChange={(e) => setClassworkQuizTitle(e.target.value)}
+                      placeholder="Quiz title (optional)"
+                    />
+                  </div>
+                  <textarea
+                    className="input-field"
+                    rows="2"
+                    value={classworkQuizInstructions}
+                    onChange={(e) => setClassworkQuizInstructions(e.target.value)}
+                    placeholder="Instructions for students (optional)"
+                  />
+                  <button
+                    className="btn-primary"
+                    onClick={() => generateTeacherQuizDraft.mutate()}
+                    disabled={generateTeacherQuizDraft.isPending || moduleItems.length === 0}
+                  >
+                    {generateTeacherQuizDraft.isPending ? "Generating Quiz Draft..." : "Create Quiz Draft (AI)"}
+                  </button>
+                </div>
+
+                {teacherLiveQuizzes.length === 0 ? (
+                  <p className="empty-state">No quizzes yet. Generate your first AI draft.</p>
+                ) : (
+                  <div className="quiz-list-simple">
+                    {teacherLiveQuizzes.map((quiz) => (
+                      <div key={quiz.id} className="quiz-list-row">
+                        <div className="quiz-list-meta">
+                          <strong>{quiz.title}</strong>
+                          <span className={`chip status-${String(quiz.state || "REVIEW").toLowerCase()}`}>{quiz.state}</span>
+                          <span className="chip">{(quiz.questions || []).length} questions</span>
+                          <span className="text-muted text-small">Session #{quiz.session}</span>
+                        </div>
+                        <div className="actions">
+                          <button
+                            className="btn-secondary"
+                            onClick={() => {
+                              setActiveTeacherQuizId(quiz.id);
+                              setTeacherQuizEditMode(false);
+                            }}
+                          >
+                            View
+                          </button>
+                          {quiz.state !== "PUBLISHED" && (
+                            <button
+                              className="btn-secondary"
+                              onClick={() => {
+                                setActiveTeacherQuizId(quiz.id);
+                                setTeacherQuizEditMode(true);
+                              }}
+                            >
+                              Edit
+                            </button>
+                          )}
+                          {quiz.state !== "PUBLISHED" && (
+                            <button
+                              className="btn-primary"
+                              onClick={() => publishTeacherQuiz.mutate(quiz.id)}
+                              disabled={publishTeacherQuiz.isPending}
+                            >
+                              {publishTeacherQuiz.isPending ? "Publishing..." : "Publish"}
+                            </button>
+                          )}
+                          <button
+                            className="btn-secondary text-danger"
+                            onClick={() => {
+                              if (window.confirm(`Delete quiz "${quiz.title}"? This cannot be undone.`)) {
+                                deleteQuiz.mutate(quiz.id);
+                              }
+                            }}
+                            disabled={deleteQuiz.isPending}
+                          >
+                            {deleteQuiz.isPending ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {activeTeacherQuizId && teacherSelectedQuiz && (
+                  <div className="quiz-detail-simple">
+                    <div className="section-header">
+                      <h4>{teacherSelectedQuiz.title || "Quiz"}</h4>
+                      <span className={`chip status-${String(teacherSelectedQuiz.state || "REVIEW").toLowerCase()}`}>
+                        {teacherSelectedQuiz.state}
+                      </span>
+                    </div>
+
+                    {teacherSelectedQuizPublished ? (
+                      <p className="text-muted">Published quiz is read-only. Students can now attempt it.</p>
+                    ) : (
+                      <div className="actions" style={{ marginTop: 0 }}>
+                        <button
+                          className="btn-secondary"
+                          onClick={() => setTeacherQuizEditMode((prev) => !prev)}
+                        >
+                          {teacherQuizEditMode ? "View Questions" : "Edit Questions"}
+                        </button>
+                        <button
+                          className="btn-secondary"
+                          onClick={() => {
+                            updateTeacherQuizMeta.mutate({
+                              quizId: activeTeacherQuizId,
+                              payload: {
+                                title: quizMetaDraft.title,
+                                instructions: quizMetaDraft.instructions,
+                              },
+                            });
+                          }}
+                          disabled={!teacherQuizEditMode || updateTeacherQuizMeta.isPending}
+                        >
+                          {updateTeacherQuizMeta.isPending ? "Saving Quiz..." : "Save Quiz Details"}
+                        </button>
+                        <button
+                          className="btn-primary"
+                          onClick={() => publishTeacherQuiz.mutate(activeTeacherQuizId)}
+                          disabled={publishTeacherQuiz.isPending}
+                        >
+                          {publishTeacherQuiz.isPending ? "Publishing..." : "Publish Quiz"}
+                        </button>
+                      </div>
+                    )}
+
+                    {teacherQuizEditMode && !teacherSelectedQuizPublished && (
+                      <div className="quiz-edit-shell">
+                        <input
+                          className="input-field"
+                          value={quizMetaDraft.title || ""}
+                          onChange={(e) => setQuizMetaDraft((prev) => ({ ...prev, title: e.target.value }))}
+                          placeholder="Quiz title"
+                        />
+                        <textarea
+                          className="input-field"
+                          rows="3"
+                          value={quizMetaDraft.instructions || ""}
+                          onChange={(e) => setQuizMetaDraft((prev) => ({ ...prev, instructions: e.target.value }))}
+                          placeholder="Quiz instructions"
+                        />
+                      </div>
+                    )}
+
+                    <div className="quiz-question-list">
+                      {(teacherSelectedQuiz.questions || []).map((question) => {
+                        const draft = quizQuestionDrafts[question.id] || {
+                          question_text: question.question_text || "",
+                          difficulty: question.difficulty || "MEDIUM",
+                          options: question.options || [],
+                        };
+
+                        const optionOrder = { A: 1, B: 2, C: 3, D: 4 };
+                        const orderedOptions = [...(draft.options || [])].sort(
+                          (a, b) => (optionOrder[String(a.option_key || "").toUpperCase()] || 99) - (optionOrder[String(b.option_key || "").toUpperCase()] || 99)
+                        );
+
+                        if (!teacherQuizEditMode || teacherSelectedQuizPublished) {
+                          return (
+                            <div key={question.id} className="quiz-question-simple">
+                              <strong>Q{question.order_index}: {question.question_text}</strong>
+                              <ul className="quiz-option-list">
+                                {(question.options || []).map((option) => (
+                                  <li key={`${question.id}-${option.id || option.option_key}`}>
+                                    <span>{String(option.option_key || "").toUpperCase()}. {option.option_text}</span>
+                                    {option.is_correct && <span className="chip">Correct</span>}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div key={question.id} className="quiz-question-simple">
+                            <textarea
+                              className="input-field"
+                              rows="2"
+                              value={draft.question_text || ""}
+                              onChange={(e) => {
+                                const nextText = e.target.value;
+                                updateQuizDraftQuestion(question.id, (current) => ({
+                                  ...current,
+                                  question_text: nextText,
+                                }));
+                              }}
+                            />
+                            <div className="stack compact">
+                              {orderedOptions.map((option) => (
+                                <label key={`${question.id}-${option.option_key}`} className="option-label" style={{ alignItems: "center", gap: "0.6rem" }}>
+                                  <input
+                                    type="radio"
+                                    name={`correct_${question.id}`}
+                                    checked={Boolean(option.is_correct)}
+                                    onChange={() => {
+                                      updateQuizDraftQuestion(question.id, (current) => ({
+                                        ...current,
+                                        options: (current.options || []).map((item) => ({
+                                          ...item,
+                                          is_correct: String(item.option_key || "").toUpperCase() === String(option.option_key || "").toUpperCase(),
+                                        })),
+                                      }));
+                                    }}
+                                  />
+                                  <span style={{ minWidth: "1.2rem" }}>{String(option.option_key || "").toUpperCase()}.</span>
+                                  <input
+                                    className="input-field"
+                                    value={option.option_text || ""}
+                                    onChange={(e) => {
+                                      const nextText = e.target.value;
+                                      updateQuizDraftQuestion(question.id, (current) => ({
+                                        ...current,
+                                        options: (current.options || []).map((item) => {
+                                          const itemKey = String(item.option_key || "").toUpperCase();
+                                          const targetKey = String(option.option_key || "").toUpperCase();
+                                          if (itemKey !== targetKey) return item;
+                                          return { ...item, option_text: nextText };
+                                        }),
+                                      }));
+                                    }}
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                            <button
+                              className="btn-secondary"
+                              onClick={() => {
+                                const current = quizQuestionDrafts[question.id] || draft;
+                                const questionText = String(current.question_text || "").trim();
+                                if (!questionText) {
+                                  window.alert("Question text cannot be empty.");
+                                  return;
+                                }
+                                const optionsByKey = new Map(
+                                  (current.options || []).map((item) => [String(item.option_key || "").toUpperCase(), item])
+                                );
+                                const normalizedOptions = ["A", "B", "C", "D"].map((key) => {
+                                  const source = optionsByKey.get(key);
+                                  return {
+                                    option_key: key,
+                                    option_text: String(source?.option_text || "").trim(),
+                                    is_correct: Boolean(source?.is_correct),
+                                  };
+                                });
+
+                                if (normalizedOptions.some((item) => !item.option_text)) {
+                                  window.alert("Each option A-D needs text before saving.");
+                                  return;
+                                }
+
+                                const correctCount = normalizedOptions.filter((item) => item.is_correct).length;
+                                if (correctCount !== 1) {
+                                  window.alert("Select exactly one correct option.");
+                                  return;
+                                }
+
+                                updateTeacherQuizQuestion.mutate({
+                                  questionId: question.id,
+                                  payload: {
+                                    question_text: questionText,
+                                    difficulty: current.difficulty || "MEDIUM",
+                                    options: normalizedOptions,
+                                  },
+                                });
+                              }}
+                              disabled={updateTeacherQuizQuestion.isPending}
+                            >
+                              {updateTeacherQuizQuestion.isPending ? "Saving Question..." : "Save Question"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {!activeTeacherQuizId && teacherLiveQuizzes.length > 0 && (
+                  <p className="text-muted">Click View on a quiz row to see questions.</p>
+                )}
+              </section>
+            )}
 
             {isStudent && (
               <section className="panel stack compact">
@@ -529,24 +1266,112 @@ export default function CoursePage() {
                 {teacherPublishedQuizzes.length === 0 ? (
                   <p className="empty-state">No teacher quiz has been published yet.</p>
                 ) : (
-                  <div className="stack compact">
-                    {teacherPublishedQuizzes.map((quiz) => (
-                      <div key={quiz.id} className="material-card">
-                        <div className="material-info">
-                          <strong>{quiz.title}</strong>
-                          <span className="chip">LIVE</span>
+                  <>
+                    <div className="quiz-grid-header">
+                      <span>Quiz Name</span>
+                      <span>Questions</span>
+                      <span>Action</span>
+                    </div>
+                    <div className="quiz-list-simple">
+                      {teacherPublishedQuizzes.map((quiz) => {
+                        const hasSubmitted = Boolean(liveQuizSubmissionById[quiz.id]);
+                        const isInProgress = activeLiveQuizId === quiz.id && liveAttemptState?.status === "IN_PROGRESS" && !hasSubmitted;
+                        return (
+                          <div key={quiz.id} className="quiz-grid-row">
+                            <strong>{quiz.title}</strong>
+                            <span>{(quiz.questions || []).length}</span>
+                            <button
+                              className="btn-primary"
+                              onClick={() => {
+                                setActiveLiveQuizId(quiz.id);
+                                startClassworkLiveAttempt.mutate(quiz.id);
+                              }}
+                              disabled={startClassworkLiveAttempt.isPending}
+                            >
+                              {startClassworkLiveAttempt.isPending && startClassworkLiveAttempt.variables === quiz.id
+                                ? "Loading..."
+                                : hasSubmitted
+                                  ? "See Results"
+                                  : isInProgress
+                                    ? "Resume"
+                                    : "Start"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {activeLiveQuizId && (
+                  <div className="quiz-detail-simple">
+                    <div className="section-header">
+                      <h4>{liveQuizDetailQuery.data?.title || "Live Quiz"}</h4>
+                      <span className="chip">{(liveQuizDetailQuery.data?.questions || []).length} questions</span>
+                    </div>
+
+                    {!liveAttemptState && !liveQuizResult ? (
+                      <p className="text-muted">Click Start in the quiz row to begin or load your submission.</p>
+                    ) : liveQuizResult ? (
+                      <div className="quiz-question-list">
+                        {(liveQuizResult.results || []).map((item, index) => (
+                          <div key={`${item.question_id || index}`} className="quiz-question-simple">
+                            <strong>Q{index + 1}: {item.question_text}</strong>
+                            <p className="text-muted text-small">
+                              Your answer: {item.selected_option_key ? `${item.selected_option_key}. ${item.selected_option_text || ""}` : "No answer submitted"}
+                            </p>
+                            {item.correct_option_key && (
+                              <p className="text-muted text-small">
+                                Correct answer: {item.correct_option_key}. {item.correct_option_text || ""}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                        <div className="grading-result">
+                          <h4>Quiz Result</h4>
+                          <div className="grading-score">
+                            Score: <strong>{liveQuizResult.score}</strong> / {liveQuizResult.max_score}
+                          </div>
+                          <p className="text-muted">Percentage: {liveQuizResult.percentage}%</p>
                         </div>
-                        <p className="text-muted text-small">Session #{quiz.session}</p>
-                        <button
-                          className="btn-secondary"
-                          onClick={() => {
-                            setActiveTab("lab");
-                          }}
-                        >
-                          Attend Quiz
-                        </button>
                       </div>
-                    ))}
+                    ) : (
+                      <div className="quiz-question-list">
+                        {(liveQuizDetailQuery.data?.questions || liveAttemptState.quiz?.questions || []).map((question) => (
+                          <div key={question.id} className="quiz-question-simple">
+                            <strong>Q{question.order_index}: {question.question_text}</strong>
+                            {(question.options || []).map((opt) => (
+                              <label key={opt.id || opt.option_key} className="option-label">
+                                <input
+                                  type="radio"
+                                  name={`live_quiz_${activeLiveQuizId}_${question.id}`}
+                                  value={opt.option_key}
+                                  checked={liveQuizAnswers[String(question.id)] === opt.option_key}
+                                  onChange={(e) => {
+                                    setLiveQuizAnswers((prev) => ({
+                                      ...prev,
+                                      [String(question.id)]: e.target.value,
+                                    }));
+                                  }}
+                                  disabled={liveAttemptState?.status !== "IN_PROGRESS"}
+                                />
+                                {opt.option_key}. {opt.option_text}
+                              </label>
+                            ))}
+                          </div>
+                        ))}
+
+                        {liveAttemptState?.status === "IN_PROGRESS" && (
+                          <button
+                            className="btn-primary"
+                            onClick={() => submitClassworkLiveAttempt.mutate()}
+                            disabled={submitClassworkLiveAttempt.isPending}
+                          >
+                            {submitClassworkLiveAttempt.isPending ? "Submitting..." : "Submit Quiz"}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </section>
@@ -557,9 +1382,15 @@ export default function CoursePage() {
                 <h3>Assignments</h3>
               </div>
 
-              {hasMaterials && isTeacher ? (
+              {isTeacher ? (
                 <div className="assignment-actions">
-                  <button className="btn-secondary" onClick={() => generateAssignment.mutate({ type: "MCQ", title: "Quiz Draft" })} disabled={generateAssignment.isPending}>Generate Quiz Draft</button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => generateAssignment.mutate({ type: "ESSAY", title: "Assignment Draft" })}
+                    disabled={generateAssignment.isPending}
+                  >
+                    {generateAssignment.isPending ? "Generating Assignment..." : "Create Assignment Draft (AI)"}
+                  </button>
                 </div>
               ) : null}
 
@@ -653,7 +1484,7 @@ export default function CoursePage() {
                                   description: draftEdit.description,
                                   type: draftEdit.type,
                                   total_marks: draftEdit.total_marks,
-                                  due_date: `${draftEdit.due_date}T23:59:59Z`,
+                                  due_date: draftEdit.due_date || null,
                                   questions: Array.isArray(questionsParsed) ? questionsParsed : [],
                                   rubric: Array.isArray(rubricParsed) ? rubricParsed : [],
                                 },
@@ -782,33 +1613,58 @@ export default function CoursePage() {
         )}
 
         {activeTab === "people" && (
-          <section className="panel stack compact">
+          <section className="panel stack compact people-shell">
             <div className="section-header">
               <h3>People</h3>
-              <span className="chip">{(peopleQuery.data?.students || []).length} students</span>
+              <span className="chip">{studentCount} students</span>
             </div>
-            <div className="panel compact">
-              <p className="eyebrow">Teacher</p>
-              <strong>{peopleQuery.data?.teacher?.name || "-"}</strong>
-              <p className="text-muted">{peopleQuery.data?.teacher?.email || ""}</p>
-            </div>
-            <div className="panel compact">
-              <p className="eyebrow">Students</p>
-              {(peopleQuery.data?.students || []).length === 0 ? (
-                <p className="text-muted">No students enrolled yet.</p>
-              ) : (
-                <div className="stack compact">
-                  {(peopleQuery.data?.students || []).map((student) => (
-                    <div key={student.id} className="material-card">
-                      <div className="material-info">
-                        <strong>{student.name}</strong>
-                        <span className="chip">Student</span>
-                      </div>
-                      <p className="text-muted text-small">{student.email}</p>
-                    </div>
-                  ))}
+            <div className="people-grid">
+              <div className="panel compact people-lead-card">
+                <div className="teacher-avatar">{teacherInitial}</div>
+                <div className="people-lead-copy">
+                  <p className="eyebrow">Teacher</p>
+                  <strong>{peopleQuery.data?.teacher?.name || "-"}</strong>
+                  <p className="text-muted">{peopleQuery.data?.teacher?.email || ""}</p>
                 </div>
-              )}
+                <div className="people-meta-row">
+                  <div className="people-stat-pill">
+                    <span>Invite Code</span>
+                    <strong>{activeInviteCode}</strong>
+                  </div>
+                  <div className="people-stat-pill">
+                    <span>Roster</span>
+                    <strong>{studentCount} students</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="panel compact student-roster">
+                <div className="student-roster-header">
+                  <div>
+                    <p className="eyebrow">Students</p>
+                    <strong>Class roster</strong>
+                  </div>
+                  <span className="chip">{studentCount} enrolled</span>
+                </div>
+                {studentCount === 0 ? (
+                  <p className="text-muted">No students enrolled yet.</p>
+                ) : (
+                  <div className="student-roster-grid">
+                    {(peopleQuery.data?.students || []).map((student) => (
+                      <article key={student.id} className="student-roster-card">
+                        <div className="student-avatar">
+                          {(student.name || "S").trim().charAt(0).toUpperCase() || "S"}
+                        </div>
+                        <div className="student-roster-copy">
+                          <strong>{student.name}</strong>
+                          <p className="text-muted text-small">{student.email}</p>
+                        </div>
+                        <span className="chip">Student</span>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
         )}
@@ -826,17 +1682,80 @@ export default function CoursePage() {
           <section className="panel stack compact">
             <div className="section-header">
               <h3>Classroom Lab</h3>
+              {isStudent && <span className="chip">{studentPracticeQuizzes.length + flashcardResults.length} active tools</span>}
             </div>
+            <p className="text-muted">
+              Build focused practice from your class modules. Quiz practice and flashcard review now live in separate stacked sections.
+            </p>
 
-            {isStudent && (
-              <div className="lab-two-box-grid">
-                <div className="panel compact stack lab-card">
-                  <p className="eyebrow">Practice Quiz</p>
+            {isStudent && !labViewType && (
+              <div className="lab-shell" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1.5rem' }}>
+                <div 
+                  className="panel compact stack lab-card" 
+                  style={{ cursor: 'pointer', transition: 'all 0.2s' }}
+                  onClick={() => setLabViewType('quiz')}
+                >
+                  <div className="lab-section-header">
+                    <div>
+                      <p className="eyebrow">Practice</p>
+                      <h4>Quiz Session</h4>
+                    </div>
+                  </div>
+                  <p className="lab-section-intro">Generate and take private practice quizzes based on your course modules.</p>
+                </div>
+                <div 
+                  className="panel compact stack lab-card"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s' }}
+                  onClick={() => setLabViewType('flashcards')}
+                >
+                  <div className="lab-section-header">
+                    <div>
+                      <p className="eyebrow">Revision</p>
+                      <h4>Flashcards</h4>
+                    </div>
+                  </div>
+                  <p className="lab-section-intro">Review concepts one card at a time with AI-generated flashcard decks.</p>
+                </div>
+              </div>
+            )}
+
+            {isStudent && labViewType === 'quiz' && (
+              <div className="lab-shell">
+                <button className="btn-secondary" onClick={() => setLabViewType(null)} style={{ marginBottom: '1rem' }}>← Back to Lab Menu</button>
+                <div className="panel compact stack lab-card lab-section-card quiz-track">
+                  <div className="lab-section-header">
+                    <div>
+                      <p className="eyebrow">Practice Quiz</p>
+                      <h4>Generate a focused quiz session</h4>
+                    </div>
+                    <span className="chip">{studentPracticeQuizzes.length} quizzes</span>
+                  </div>
+                  <p className="lab-section-intro">
+                    Pick one module or combine several, then launch a private quiz attempt from the generated set below.
+                  </p>
                   <div className="actions" style={{ marginTop: 0 }}>
                     <button className={`btn-secondary ${labScopeMode === "single" ? "active-scope" : ""}`} onClick={() => setLabScopeMode("single")}>Single Module</button>
                     <button className={`btn-secondary ${labScopeMode === "multiple" ? "active-scope" : ""}`} onClick={() => setLabScopeMode("multiple")}>Multiple Modules</button>
                   </div>
-                  <input className="input-field" placeholder="Optional focus topic" value={labTopic} onChange={(e) => setLabTopic(e.target.value)} />
+                  <div className="actions" style={{ marginTop: 0 }}>
+                    <input
+                      className="input-field"
+                      placeholder="Custom name (optional)"
+                      value={practiceQuizName}
+                      onChange={(e) => setPracticeQuizName(e.target.value)}
+                    />
+                    <label className="option-label" style={{ minWidth: "170px" }}>
+                      Questions
+                      <select
+                        value={practiceQuestionCount}
+                        onChange={(e) => setPracticeQuestionCount(Number(e.target.value))}
+                      >
+                        {[5, 8, 10, 12, 15, 20].map((count) => (
+                          <option key={count} value={count}>{count}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                   {labScopeMode === "single" ? (
                     <select
                       value={labSelectedModules[0] || ""}
@@ -882,40 +1801,97 @@ export default function CoursePage() {
                   >
                     {generatePracticeQuizFromLab.isPending ? "Generating Quiz..." : "Generate Quiz"}
                   </button>
-                  {studentPracticeQuizzes.length > 0 && (
+                  {studentPracticeQuizzes.length > 0 ? (
                     <>
-                      <select
-                        value={labActiveQuizId || ""}
-                        onChange={(e) => {
-                          setLabActiveQuizId(Number(e.target.value));
-                          setLabAttemptState(null);
-                          setLabQuizResult(null);
-                        }}
-                      >
-                        {studentPracticeQuizzes.map((quiz) => (
-                          <option key={quiz.id} value={quiz.id}>{quiz.title}</option>
-                        ))}
-                      </select>
+                      <div className="quiz-grid-header">
+                        <span>Quiz Name</span>
+                        <span>Questions</span>
+                        <span>Action</span>
+                      </div>
+                      <div className="quiz-list-simple">
+                        {studentPracticeQuizzes.map((quiz) => {
+                          const remembered = practiceQuizHistory[quiz.id];
+                          const hasResult = Boolean(remembered?.result) || Boolean(quiz.has_submitted);
+                          return (
+                            <div key={quiz.id} className="quiz-grid-row">
+                              <strong>{quiz.title}</strong>
+                              <span>{(quiz.questions || []).length}</span>
+                              <div className="actions" style={{ marginTop: 0 }}>
+                                <button
+                                  className="btn-secondary"
+                                  onClick={() => {
+                                    const snapshot = practiceQuizHistory[quiz.id];
+                                    setLabActiveQuizId(quiz.id);
+                                    setLabAttemptState(null);
+                                    setLabQuizAnswers(snapshot?.answers || {});
+                                    setLabQuizResult(snapshot?.result || null);
+                                  }}
+                                >
+                                  {hasResult ? "See Results" : "Open"}
+                                </button>
+                                <button
+                                  className="btn-primary"
+                                  onClick={() => {
+                                    setLabActiveQuizId(quiz.id);
+                                    setLabQuizResult(null);
+                                    startLabAttempt.mutate(quiz.id);
+                                  }}
+                                  disabled={startLabAttempt.isPending}
+                                >
+                                  {startLabAttempt.isPending && startLabAttempt.variables === quiz.id
+                                    ? "Loading..."
+                                    : hasResult
+                                      ? "Retake"
+                                      : "Start"}
+                                </button>
+                                <button
+                                  className="btn-secondary text-danger"
+                                  onClick={() => {
+                                    if (window.confirm(`Delete practice quiz "${quiz.title}"?`)) {
+                                      deleteQuiz.mutate(quiz.id);
+                                    }
+                                  }}
+                                  disabled={deleteQuiz.isPending}
+                                >
+                                  {deleteQuiz.isPending ? "Deleting..." : "Delete"}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
 
-                      {labQuizDetailQuery.data && (
-                        <div className="panel compact stack">
-                          <div className="material-info">
-                            <strong>{labQuizDetailQuery.data.title}</strong>
+                      {labActiveQuizId && labQuizDetailQuery.data && (
+                        <div className="quiz-detail-simple">
+                          <div className="section-header">
+                            <h4>{labQuizDetailQuery.data.title}</h4>
                             <span className="chip">PRIVATE</span>
                           </div>
 
-                          {!labAttemptState ? (
-                            <button
-                              className="btn-secondary"
-                              onClick={() => startLabAttempt.mutate(labActiveQuizId)}
-                              disabled={startLabAttempt.isPending}
-                            >
-                              {startLabAttempt.isPending ? "Starting..." : "Start Quiz"}
-                            </button>
-                          ) : (
-                            <>
+                          {labQuizResult ? (
+                            <div className="quiz-question-list">
+                              {(labQuizResult.results || []).map((item, index) => (
+                                <div key={`${item.question_id || index}`} className="quiz-question-simple">
+                                  <strong>Q{index + 1}: {item.question_text}</strong>
+                                  <p className="text-muted text-small">
+                                    Your answer: {item.selected_option_key ? `${item.selected_option_key}. ${item.selected_option_text || ""}` : "No answer submitted"}
+                                  </p>
+                                  {item.correct_option_key && (
+                                    <p className="text-muted text-small">
+                                      Correct answer: {item.correct_option_key}. {item.correct_option_text || ""}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                              <div className="grading-result lab-result-panel">
+                                <p className="eyebrow">Last Result</p>
+                                <strong>{labQuizResult.score} / {labQuizResult.max_score} ({labQuizResult.percentage}%)</strong>
+                              </div>
+                            </div>
+                          ) : labAttemptState ? (
+                            <div className="quiz-question-list">
                               {(labAttemptState.quiz?.questions || labQuizDetailQuery.data.questions || []).map((question) => (
-                                <div key={question.id} className="panel compact stack">
+                                <div key={question.id} className="quiz-question-simple">
                                   <strong>Q{question.order_index}: {question.question_text}</strong>
                                   {(question.options || []).map((opt) => (
                                     <label key={opt.id || opt.option_key} className="option-label">
@@ -925,7 +1901,6 @@ export default function CoursePage() {
                                         value={opt.option_key}
                                         checked={labQuizAnswers[String(question.id)] === opt.option_key}
                                         onChange={(e) => setLabQuizAnswers((prev) => ({ ...prev, [String(question.id)]: e.target.value }))}
-                                        disabled={!!labQuizResult}
                                       />
                                       {opt.option_key}. {opt.option_text}
                                     </label>
@@ -933,29 +1908,37 @@ export default function CoursePage() {
                                 </div>
                               ))}
 
-                              {!labQuizResult && (
-                                <button className="btn-primary" onClick={() => submitLabAttempt.mutate()} disabled={submitLabAttempt.isPending}>
-                                  {submitLabAttempt.isPending ? "Submitting..." : "Submit Quiz"}
-                                </button>
-                              )}
-
-                              {labQuizResult && (
-                                <div className="panel compact stack">
-                                  <p className="eyebrow">Result</p>
-                                  <strong>{labQuizResult.score} / {labQuizResult.max_score} ({labQuizResult.percentage}%)</strong>
-                                </div>
-                              )}
-                            </>
+                              <button className="btn-primary" onClick={() => submitLabAttempt.mutate()} disabled={submitLabAttempt.isPending}>
+                                {submitLabAttempt.isPending ? "Submitting..." : "Submit Quiz"}
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="text-muted">Use Start or Retake from the quiz row above.</p>
                           )}
                         </div>
                       )}
                     </>
+                  ) : (
+                    <p className="text-muted">Generate your first quiz to start practicing.</p>
                   )}
-                  {studentPracticeQuizzes.length === 0 && <p className="text-muted">Generate your first quiz to start practicing.</p>}
                 </div>
+              </div>
+            )}
 
-                <div className="panel compact stack lab-card">
-                  <p className="eyebrow">Flashcards</p>
+            {isStudent && labViewType === 'flashcards' && (
+              <div className="lab-shell">
+                <button className="btn-secondary" onClick={() => setLabViewType(null)} style={{ marginBottom: '1rem' }}>← Back to Lab Menu</button>
+                <div className="panel compact stack lab-card lab-section-card flashcard-track">
+                  <div className="lab-section-header">
+                    <div>
+                      <p className="eyebrow">Flashcards</p>
+                      <h4>Review concepts one card at a time</h4>
+                    </div>
+                    <span className="chip">{flashcardResults.length} cards</span>
+                  </div>
+                  <p className="lab-section-intro">
+                    Generate a revision stack from your current module selection and move through it at your own pace.
+                  </p>
                   <button className="btn-primary" onClick={() => generateFlashcards.mutate()} disabled={generateFlashcards.isPending || moduleItems.length === 0}>
                     {generateFlashcards.isPending ? "Generating..." : "Generate Flashcards"}
                   </button>
@@ -1004,6 +1987,7 @@ export default function CoursePage() {
                 </div>
               </div>
             )}
+            {!isStudent && <p className="empty-state">Practice tools appear here for students enrolled in this classroom.</p>}
           </section>
         )}
       </div>
