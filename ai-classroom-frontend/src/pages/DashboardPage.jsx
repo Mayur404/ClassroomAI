@@ -23,30 +23,18 @@ export default function DashboardPage() {
     <div className="stack">
       <section className="panel hero">
         <div>
-          <p className="eyebrow">Welcome{user ? `, ${user.name}` : ""}</p>
-          <h2>{user?.role === "TEACHER" ? "Teacher Workspace" : "Student Workspace"}</h2>
+          <p className="eyebrow">Welcome, {user.name}</p>
+          <h2>{user.role === "TEACHER" ? "Teacher Workspace" : "Student Workspace"}</h2>
           <p>
             Upload PDFs, ask grounded questions, build learning paths, and generate assignments using a
             Groq + Sarvam + RAG pipeline.
           </p>
         </div>
         <div className="actions">
-          {user ? (
-            <>
-              <Link to={primaryHref} className="btn-primary">
-                {primaryCourse ? "Open Classroom" : "Create a Classroom"}
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: '4px' }}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-              </Link>
-              <button className="btn-secondary" onClick={logout}>
-                Logout
-              </button>
-            </>
-          ) : (
-            <Link to="/login" className="btn-primary">
-              Login to Start
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: '4px' }}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-            </Link>
-          )}
+          <Link to={primaryHref} className="btn-primary">
+            {primaryCourse ? "Open Classroom" : "Create a Classroom"}
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: '4px' }}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </Link>
         </div>
       </section>
 

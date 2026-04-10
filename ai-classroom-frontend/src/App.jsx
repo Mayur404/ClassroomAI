@@ -4,8 +4,10 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import client from "./api/client";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import DashboardPage from "./pages/DashboardPage";
+import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import CoursePage from "./pages/CoursePage";
+import ModifyAccountPage from "./pages/ModifyAccountPage";
 
 function ProtectedRoute({ children }) {
   const { user, isBootstrapping } = useAuth();
@@ -20,6 +22,7 @@ function Layout() {
   const [newCourseName, setNewCourseName] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [joinError, setJoinError] = useState("");
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   const coursesQuery = useQuery({
     queryKey: ["courses"],
@@ -70,13 +73,23 @@ function Layout() {
     joinCourse.mutate(inviteCode.trim().toUpperCase());
   };
 
+  if (!user) {
+    return (
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="*" element={<Navigate to="/" />} />
+      </Routes>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
           <div>
             <p className="eyebrow">Platform</p>
-            <h1>AI-Classroom</h1>
+            <h1>AIEdu</h1>
           </div>
         </div>
         <nav>
@@ -166,13 +179,50 @@ function Layout() {
           )}
         </nav>
         {user && (
-          <div className="sidebar-user">
-            <div className="user-avatar">{user.name?.[0] || "U"}</div>
-            <div>
-              <strong>{user.name}</strong>
-              <p>{user.email} • {user.role}</p>
+          <div className="sidebar-user" style={{ padding: '0.75rem', borderTop: '1px solid var(--border)', marginTop: 'auto', position: 'relative' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', overflow: 'hidden' }}>
+                <div className="user-avatar" style={{ width: '32px', height: '32px', minWidth: '32px', borderRadius: '50%', backgroundColor: 'var(--primary)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>
+                  {user.name?.[0] || "U"}
+                </div>
+                <div style={{ overflow: 'hidden' }}>
+                  <strong style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.9rem' }}>{user.name}</strong>
+                  <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>{user.role}</p>
+                </div>
+              </div>
+              <button 
+                className="btn-icon" 
+                onClick={() => setShowUserMenu(!showUserMenu)}
+                style={{ padding: '0.5rem', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)', borderRadius: '50%' }}
+                aria-label="User settings"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+              </button>
             </div>
-            <button className="btn-secondary" onClick={logout} style={{ marginLeft: "auto", padding: "0.25rem 0.5rem" }}>Logout</button>
+            
+            {showUserMenu && (
+              <div className="user-popover" style={{ position: 'absolute', bottom: '100%', right: '10px', marginBottom: '10px', background: 'var(--panel-bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)', minWidth: '150px', zIndex: 10, display: 'flex', flexDirection: 'column' }}>
+                <NavLink 
+                  to="/account" 
+                  className={({ isActive }) => `menu-item ${isActive ? "active" : ""}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0.75rem 1rem', color: 'var(--text)', textDecoration: 'none', fontSize: '0.85rem', borderBottom: '1px solid var(--border)' }}
+                  onClick={() => setShowUserMenu(false)}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                  Modify Account
+                </NavLink>
+                <button 
+                  onClick={() => {
+                    setShowUserMenu(false);
+                    logout();
+                  }}
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0.75rem 1rem', background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '0.85rem', textAlign: 'left', width: '100%' }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                  Logout
+                </button>
+              </div>
+            )}
           </div>
         )}
       </aside>
@@ -185,6 +235,14 @@ function Layout() {
             element={
               <ProtectedRoute>
                 <CoursePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/account"
+            element={
+              <ProtectedRoute>
+                <ModifyAccountPage />
               </ProtectedRoute>
             }
           />
