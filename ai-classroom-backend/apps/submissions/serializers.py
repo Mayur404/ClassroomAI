@@ -4,6 +4,12 @@ from .models import Submission
 
 
 class SubmissionSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source="student.name", read_only=True)
+    student_email = serializers.EmailField(source="student.email", read_only=True)
+    assignment_title = serializers.CharField(source="assignment.title", read_only=True)
+    final_grade = serializers.SerializerMethodField()
+    grade_source = serializers.SerializerMethodField()
+
     def validate_answers(self, value):
         if not isinstance(value, dict):
             raise serializers.ValidationError("answers must be an object keyed by question number.")
@@ -28,6 +34,12 @@ class SubmissionSerializer(serializers.ModelSerializer):
 
         return normalized
 
+    def get_final_grade(self, obj):
+        return obj.final_grade
+
+    def get_grade_source(self, obj):
+        return obj.grade_source
+
     class Meta:
         model = Submission
         fields = (
@@ -41,7 +53,15 @@ class SubmissionSerializer(serializers.ModelSerializer):
             "ai_feedback",
             "score_breakdown",
             "grading_version",
+            "teacher_grade",
+            "teacher_feedback",
+            "teacher_graded_at",
+            "final_grade",
+            "grade_source",
             "graded_at",
+            "student_name",
+            "student_email",
+            "assignment_title",
         )
         read_only_fields = (
             "assignment",
@@ -52,5 +72,25 @@ class SubmissionSerializer(serializers.ModelSerializer):
             "ai_feedback",
             "score_breakdown",
             "grading_version",
+            "teacher_grade",
+            "teacher_feedback",
+            "teacher_graded_at",
+            "final_grade",
+            "grade_source",
             "graded_at",
+            "student_name",
+            "student_email",
+            "assignment_title",
         )
+
+
+class SubmissionTeacherGradeSerializer(serializers.Serializer):
+    teacher_grade = serializers.FloatField(min_value=0)
+    teacher_feedback = serializers.CharField(required=False, allow_blank=True, max_length=4000)
+
+    def validate_teacher_grade(self, value):
+        submission = self.context["submission"]
+        max_marks = float(submission.assignment.total_marks or 0)
+        if value > max_marks:
+            raise serializers.ValidationError(f"Teacher grade cannot exceed {max_marks:g}.")
+        return round(float(value), 2)

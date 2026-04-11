@@ -62,6 +62,24 @@ class Course(models.Model):
         super().save(*args, **kwargs)
 
 
+class CourseAnnouncement(models.Model):
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="announcements")
+    teacher = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="course_announcements")
+    title = models.CharField(max_length=255, blank=True)
+    message = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["course", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.title or f"Announcement for {self.course.name}"
+
+
 def material_upload_path(instance, filename):
     return f"materials/course_{instance.course_id}/{filename}"
 

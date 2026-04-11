@@ -11,7 +11,7 @@ from apps.assignments.models import Assignment
 from apps.assignments.models import AssignmentStatus
 
 from .models import Submission, SubmissionStatus
-from .serializers import SubmissionSerializer
+from .serializers import SubmissionSerializer, SubmissionTeacherGradeSerializer
 
 
 class SubmissionCreateView(APIView):
@@ -28,27 +28,32 @@ class SubmissionCreateView(APIView):
         )
         if assignment.status != AssignmentStatus.PUBLISHED:
             return Response({"detail": "This assignment is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
+        if assignment.due_date and assignment.due_date <= timezone.now():
+            return Response({"detail": "This assignment is closed because the due date has passed."}, status=status.HTTP_400_BAD_REQUEST)
+        if Submission.objects.filter(assignment=assignment, student=request.user).exists():
+            return Response(
+                {"detail": "You have already submitted this assignment. Retakes are disabled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         serializer = SubmissionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         answers = serializer.validated_data.get("answers", {})
         result = grade_submission(assignment=assignment, answers=answers)
 
-        submission, created = Submission.objects.update_or_create(
+        submission = Submission.objects.create(
             assignment=assignment,
             student=request.user,
-            defaults={
-                "answers": answers,
-                "status": SubmissionStatus.GRADED,
-                "submitted_at": timezone.now(),
-                "ai_grade": result["total_score"],
-                "ai_feedback": result.get("ai_feedback", {"overall_feedback": result["overall_feedback"]}),
-                "score_breakdown": result["score_breakdown"],
-                "graded_at": timezone.now(),
-            },
+            answers=answers,
+            status=SubmissionStatus.GRADED,
+            submitted_at=timezone.now(),
+            ai_grade=result["total_score"],
+            ai_feedback=result.get("ai_feedback", {"overall_feedback": result["overall_feedback"]}),
+            score_breakdown=result["score_breakdown"],
+            grading_version=result.get("grading_version", "v1"),
+            graded_at=timezone.now(),
         )
-        response_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        return Response(SubmissionSerializer(submission).data, status=response_status)
+        return Response(SubmissionSerializer(submission).data, status=status.HTTP_201_CREATED)
 
 
 class SubmissionDetailView(generics.RetrieveDestroyAPIView):
@@ -59,6 +64,14 @@ class SubmissionDetailView(generics.RetrieveDestroyAPIView):
         return Submission.objects.filter(
             Q(student=self.request.user) | Q(assignment__course__teacher=self.request.user)
         ).select_related("assignment", "student", "assignment__course")
+
+    def destroy(self, request, *args, **kwargs):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Students cannot delete submitted assignments.")
+        submission = self.get_object()
+        if submission.assignment.course.teacher_id != request.user.id:
+            raise PermissionDenied("Only the classroom teacher can delete submissions.")
+        return super().destroy(request, *args, **kwargs)
 
 
 class SubmissionRegradeView(APIView):
@@ -76,9 +89,32 @@ class SubmissionRegradeView(APIView):
         submission.ai_grade = result["total_score"]
         submission.ai_feedback = result.get("ai_feedback", {"overall_feedback": result["overall_feedback"]})
         submission.score_breakdown = result["score_breakdown"]
+        submission.grading_version = result.get("grading_version", submission.grading_version)
         submission.status = SubmissionStatus.GRADED
         submission.graded_at = timezone.now()
-        submission.save(update_fields=["ai_grade", "ai_feedback", "score_breakdown", "status", "graded_at"])
+        submission.save(update_fields=["ai_grade", "ai_feedback", "score_breakdown", "grading_version", "status", "graded_at"])
+        return Response(SubmissionSerializer(submission).data, status=status.HTTP_200_OK)
+
+
+class SubmissionTeacherGradeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, submission_id):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can override assignment marks.")
+        submission = get_object_or_404(
+            Submission.objects.select_related("assignment", "assignment__course"),
+            id=submission_id,
+            assignment__course__teacher=request.user,
+        )
+        serializer = SubmissionTeacherGradeSerializer(data=request.data, context={"submission": submission})
+        serializer.is_valid(raise_exception=True)
+
+        submission.teacher_grade = serializer.validated_data["teacher_grade"]
+        submission.teacher_feedback = serializer.validated_data.get("teacher_feedback", "").strip()
+        submission.teacher_graded_at = timezone.now()
+        submission.status = SubmissionStatus.GRADED
+        submission.save(update_fields=["teacher_grade", "teacher_feedback", "teacher_graded_at", "status"])
         return Response(SubmissionSerializer(submission).data, status=status.HTTP_200_OK)
 
 
@@ -95,6 +131,8 @@ class SubmissionPrecheckView(APIView):
         )
         if assignment.status != AssignmentStatus.PUBLISHED:
             return Response({"detail": "This assignment is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
+        if assignment.due_date and assignment.due_date <= timezone.now():
+            return Response({"detail": "This assignment is closed because the due date has passed."}, status=status.HTTP_400_BAD_REQUEST)
         answers = request.data.get("answers", {})
         if not isinstance(answers, dict) or not answers:
             return Response({"detail": "answers must be a non-empty object"}, status=status.HTTP_400_BAD_REQUEST)

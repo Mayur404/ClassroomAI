@@ -20,6 +20,9 @@ class Submission(models.Model):
     ai_feedback = models.JSONField(default=dict, blank=True)
     score_breakdown = models.JSONField(default=list, blank=True)
     grading_version = models.CharField(max_length=50, default="v1")
+    teacher_grade = models.FloatField(blank=True, null=True)
+    teacher_feedback = models.TextField(blank=True)
+    teacher_graded_at = models.DateTimeField(blank=True, null=True)
     graded_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
@@ -29,3 +32,11 @@ class Submission(models.Model):
             models.Index(fields=['assignment', '-submitted_at']),
             models.Index(fields=['student', '-submitted_at']),
         ]
+
+    @property
+    def final_grade(self):
+        return self.teacher_grade if self.teacher_grade is not None else self.ai_grade
+
+    @property
+    def grade_source(self):
+        return "TEACHER" if self.teacher_grade is not None else "AI"

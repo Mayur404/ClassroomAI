@@ -182,6 +182,7 @@ def grade_submission_logic(submission_id: int):
         submission.ai_grade = result["total_score"]
         submission.ai_feedback = result.get("ai_feedback", {"overall_feedback": result["overall_feedback"]})
         submission.score_breakdown = result["score_breakdown"]
+        submission.grading_version = result.get("grading_version", submission.grading_version)
         submission.status = SubmissionStatus.GRADED
         submission.graded_at = timezone.now()
         submission.save()

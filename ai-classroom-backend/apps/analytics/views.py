@@ -1,4 +1,5 @@
 from django.db.models import Avg, Count, Q
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from datetime import timedelta
@@ -29,7 +30,7 @@ class CourseAnalyticsView(APIView):
         # Basic assignment analytics
         assignments = course.assignments.all()
         submissions = Submission.objects.filter(assignment__course=course)
-        average_score = assignments.aggregate(avg=Avg("submissions__ai_grade"))["avg"] or 0
+        average_score = assignments.aggregate(avg=Avg(Coalesce("submissions__teacher_grade", "submissions__ai_grade")))["avg"] or 0
         latest_submission = submissions.order_by("-submitted_at").first()
         assignment_type_breakdown = list(
             assignments.values("type").annotate(count=Count("id")).order_by("type")

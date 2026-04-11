@@ -24,10 +24,20 @@ from apps.assignments.models import Assignment
 from apps.submissions.models import Submission
 from apps.ai_service.rag_service import search_course
 
-from .models import ClassSchedule, Course, CourseMaterial, Enrollment, ParseStatus, ScheduleStatus, StudentNotebook
+from .models import (
+    ClassSchedule,
+    Course,
+    CourseAnnouncement,
+    CourseMaterial,
+    Enrollment,
+    ParseStatus,
+    ScheduleStatus,
+    StudentNotebook,
+)
 from .serializers import (
     ClassScheduleSerializer,
     CourseSerializer,
+    CourseAnnouncementSerializer,
     EnrollmentSerializer,
     StudentNotebookSerializer,
     SyllabusUploadSerializer,
@@ -144,13 +154,13 @@ class CourseListCreateView(generics.ListCreateAPIView):
                 Course.objects.filter(teacher=self.request.user)
                 .select_related("teacher")
                 .annotate(assignment_count_value=Count("assignments", distinct=True))
-                .prefetch_related("schedule_items", "materials")
+                .prefetch_related("schedule_items", "materials", "announcements")
             )
         return (
             Course.objects.filter(enrollments__student=self.request.user)
             .select_related("teacher")
             .annotate(assignment_count_value=Count("assignments", distinct=True))
-            .prefetch_related("schedule_items", "materials")
+            .prefetch_related("schedule_items", "materials", "announcements")
             .distinct()
         )
 
@@ -170,13 +180,13 @@ class CourseDetailView(generics.RetrieveUpdateDestroyAPIView):
                 Course.objects.filter(teacher=self.request.user)
                 .select_related("teacher")
                 .annotate(assignment_count_value=Count("assignments", distinct=True))
-                .prefetch_related("schedule_items", "materials")
+                .prefetch_related("schedule_items", "materials", "announcements")
             )
         return (
             Course.objects.filter(enrollments__student=self.request.user)
             .select_related("teacher")
             .annotate(assignment_count_value=Count("assignments", distinct=True))
-            .prefetch_related("schedule_items", "materials")
+            .prefetch_related("schedule_items", "materials", "announcements")
             .distinct()
         )
 
@@ -203,6 +213,49 @@ class EnrollmentCreateView(generics.CreateAPIView):
         if target_course and Enrollment.objects.filter(student=self.request.user, course=target_course).exists():
             raise ValidationError({"detail": "You are already enrolled in this classroom."})
         serializer.save(student=self.request.user)
+
+
+class CourseAnnouncementListCreateView(generics.ListCreateAPIView):
+    serializer_class = CourseAnnouncementSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _course_for_request(self):
+        if self.request.user.role == "TEACHER":
+            return get_object_or_404(Course, id=self.kwargs["course_id"], teacher=self.request.user)
+        return get_object_or_404(Course, id=self.kwargs["course_id"], enrollments__student=self.request.user)
+
+    def get_queryset(self):
+        course = self._course_for_request()
+        return course.announcements.select_related("teacher")
+
+    def perform_create(self, serializer):
+        if self.request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can post announcements.")
+        course = get_object_or_404(Course, id=self.kwargs["course_id"], teacher=self.request.user)
+        serializer.save(course=course, teacher=self.request.user)
+
+
+class CourseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = CourseAnnouncementSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        if self.request.user.role == "TEACHER":
+            return CourseAnnouncement.objects.filter(course__teacher=self.request.user).select_related("teacher", "course")
+        return CourseAnnouncement.objects.filter(course__enrollments__student=self.request.user).select_related(
+            "teacher",
+            "course",
+        ).distinct()
+
+    def update(self, request, *args, **kwargs):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can update announcements.")
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if request.user.role != "TEACHER":
+            raise PermissionDenied("Only teachers can delete announcements.")
+        return super().destroy(request, *args, **kwargs)
 
 
 class SyllabusUploadView(APIView):

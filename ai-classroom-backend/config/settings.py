@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     SECURE_HSTS_SECONDS: int = Field(default=0)
     SECURE_HSTS_INCLUDE_SUBDOMAINS: bool = Field(default=False)
     SECURE_HSTS_PRELOAD: bool = Field(default=False)
+    JWT_ACCESS_TOKEN_MINUTES: int = Field(default=40)
+    JWT_REFRESH_TOKEN_MINUTES: int = Field(default=60 * 24 * 7)
     
     @field_validator("ENVIRONMENT")
     @classmethod
@@ -459,6 +461,13 @@ INSTITUTE_EMAIL_DOMAIN = settings.INSTITUTE_EMAIL_DOMAIN
 CACHE_TIMEOUT = settings.CACHE_TIMEOUT
 ANSWER_CACHE_TIMEOUT = settings.ANSWER_CACHE_TIMEOUT
 SEARCH_CACHE_TIMEOUT = settings.SEARCH_CACHE_TIMEOUT
+
+# ============================================================================
+# JWT CONFIGURATION
+# ============================================================================
+
+JWT_ACCESS_TOKEN_MINUTES = settings.JWT_ACCESS_TOKEN_MINUTES
+JWT_REFRESH_TOKEN_MINUTES = settings.JWT_REFRESH_TOKEN_MINUTES
 
 # ============================================================================
 # SENTRY ERROR TRACKING (Optional)

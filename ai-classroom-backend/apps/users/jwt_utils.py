@@ -26,12 +26,12 @@ def _base_payload(user, token_type: str, minutes: int) -> dict:
 
 
 def issue_access_token(user) -> str:
-    payload = _base_payload(user, token_type="access", minutes=15)
+    payload = _base_payload(user, token_type="access", minutes=settings.JWT_ACCESS_TOKEN_MINUTES)
     return jwt.encode(payload, _jwt_secret(), algorithm="HS256")
 
 
 def issue_refresh_token(user) -> str:
-    payload = _base_payload(user, token_type="refresh", minutes=60 * 24 * 7)
+    payload = _base_payload(user, token_type="refresh", minutes=settings.JWT_REFRESH_TOKEN_MINUTES)
     return jwt.encode(payload, _jwt_secret(), algorithm="HS256")
 
 

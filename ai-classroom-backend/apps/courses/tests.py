@@ -222,3 +222,59 @@ class CourseMaterialWorkflowTests(APITestCase):
         self.assertTrue(mock_generate_schedule.call_args.kwargs["use_ai"])
         self.course.refresh_from_db()
         self.assertTrue(self.course.schedule_items.first().is_ai_generated)
+
+
+class CourseAnnouncementWorkflowTests(APITestCase):
+    def setUp(self):
+        self.teacher = User.objects.create_user(
+            email="ann-teacher@example.com",
+            password="testpass123",
+            name="Announcement Teacher",
+            role=UserRole.TEACHER,
+        )
+        self.student = User.objects.create_user(
+            email="ann-student@example.com",
+            password="testpass123",
+            name="Announcement Student",
+            role=UserRole.STUDENT,
+        )
+        self.teacher_token = Token.objects.create(user=self.teacher)
+        self.student_token = Token.objects.create(user=self.student)
+        self.course = Course.objects.create(teacher=self.teacher, name="Signals")
+        self.course.enrollments.create(student=self.student)
+
+    def authenticate(self, role="teacher"):
+        token = self.teacher_token if role == "teacher" else self.student_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_teacher_can_post_announcement_and_student_can_see_it(self):
+        self.authenticate("teacher")
+        create_response = self.client.post(
+            reverse("course-announcement-list-create", args=[self.course.id]),
+            {
+                "title": "Tomorrow's update",
+                "message": "Read the worksheet before class. Submission window closes at 9 PM.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        self.authenticate("student")
+        detail_response = self.client.get(reverse("course-detail", args=[self.course.id]))
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.data["announcements"][0]["title"], "Tomorrow's update")
+        self.assertIn("worksheet", detail_response.data["announcements"][0]["message"])
+
+    def test_student_cannot_post_announcement(self):
+        self.authenticate("student")
+        response = self.client.post(
+            reverse("course-announcement-list-create", args=[self.course.id]),
+            {
+                "title": "Student note",
+                "message": "Can we move the deadline?",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)

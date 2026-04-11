@@ -1,4 +1,5 @@
-from django.db.models import Prefetch
+from django.db.models import Avg, Count, Prefetch
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, permissions, status
@@ -15,16 +16,30 @@ from .serializers import AssignmentGenerateSerializer, AssignmentSerializer
 
 
 def _assignment_queryset_for_user(user):
-    return (
+    queryset = (
         Assignment.objects.select_related("course")
+        .annotate(
+            submission_count_value=Count("submissions", distinct=True),
+            enrollment_count_value=Count("course__enrollments", distinct=True),
+            average_score_value=Avg(Coalesce("submissions__teacher_grade", "submissions__ai_grade")),
+        )
         .prefetch_related(
             Prefetch(
                 "submissions",
-                queryset=Submission.objects.filter(student=user).order_by("-submitted_at"),
+                queryset=Submission.objects.filter(student=user).select_related("student", "assignment").order_by("-submitted_at"),
                 to_attr="request_user_submissions",
             )
         )
     )
+    if getattr(user, "role", None) == "TEACHER":
+        queryset = queryset.prefetch_related(
+            Prefetch(
+                "submissions",
+                queryset=Submission.objects.select_related("student", "assignment").order_by("-submitted_at"),
+                to_attr="teacher_visible_submissions",
+            )
+        )
+    return queryset
 
 
 class AssignmentListView(generics.ListAPIView):

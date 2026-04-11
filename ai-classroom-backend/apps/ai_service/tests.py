@@ -138,7 +138,7 @@ class EssayGradingTests(SimpleTestCase):
         self.assertEqual(result["score_breakdown"][0]["max_score"], 20.0)
         self.assertIn("Good understanding", result["score_breakdown"][0]["feedback"])
 
-    def test_fallback_grading_is_lenient_for_short_but_relevant_essay_answers(self):
+    def test_fallback_grading_stays_moderate_for_short_but_relevant_essay_answers(self):
         assignment = self._essay_assignment(marks=10)
 
         result = _fallback_grading(
@@ -146,9 +146,25 @@ class EssayGradingTests(SimpleTestCase):
             answers={"1": "Photosynthesis helps plants make food. For example, leaves use sunlight."},
         )
 
-        self.assertGreaterEqual(result["total_score"], 6.0)
+        self.assertGreaterEqual(result["total_score"], 4.0)
         self.assertLessEqual(result["total_score"], 10.0)
-        self.assertIn("relevant", result["score_breakdown"][0]["feedback"].lower())
+        self.assertIn("relev", result["score_breakdown"][0]["feedback"].lower())
+
+    def test_fallback_grading_penalizes_off_topic_answers(self):
+        assignment = self._essay_assignment(marks=10)
+
+        result = _fallback_grading(
+            assignment=assignment,
+            answers={"1": "Cricket is a sport played between two teams with bats and balls."},
+        )
+
+        self.assertLess(result["total_score"], 3.5)
+        self.assertTrue(
+            any(
+                phrase in result["score_breakdown"][0]["feedback"].lower()
+                for phrase in ["off-topic", "vague", "incomplete", "limited relevance"]
+            )
+        )
 
 
 class VoiceChatServiceTests(SimpleTestCase):

@@ -14,22 +14,35 @@ from apps.users.models import User, UserRole
 
 class AssignmentWorkflowTests(APITestCase):
     def setUp(self):
-        self.user = User.objects.create_user(
+        self.teacher = User.objects.create_user(
+            email="teacher@example.com",
+            password="testpass123",
+            name="Teacher",
+            role=UserRole.TEACHER,
+        )
+        self.student = User.objects.create_user(
             email="student@example.com",
             password="testpass123",
             name="Student",
             role=UserRole.STUDENT,
         )
-        token = Token.objects.create(user=self.user)
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.teacher_token = Token.objects.create(user=self.teacher)
+        self.student_token = Token.objects.create(user=self.student)
         self.course = Course.objects.create(
-            teacher=self.user,
+            teacher=self.teacher,
             name="AI Systems",
             extracted_topics=["Neural Networks", "Backpropagation", "Optimization"],
         )
+        self.course.enrollments.create(student=self.student)
+        self.authenticate(self.teacher)
+
+    def authenticate(self, user):
+        token = self.teacher_token if user == self.teacher else self.student_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
 
     @mock.patch("apps.ai_service.services.call_ollama", side_effect=RuntimeError("offline"))
     def test_generate_assignment_accepts_date_only_due_date(self, _mock_call_ollama):
+        self.authenticate(self.teacher)
         response = self.client.post(
             reverse("assignment-generate", args=[self.course.id]),
             {
@@ -50,12 +63,14 @@ class AssignmentWorkflowTests(APITestCase):
         self.assertIn("explanation", first_answer)
         self.assertIn("2026-03-30", response.data["due_date"])
 
-    def test_submission_endpoint_updates_existing_submission_instead_of_crashing(self):
+    def test_submission_endpoint_rejects_second_attempt_when_retakes_are_disabled(self):
+        self.authenticate(self.student)
         assignment = Assignment.objects.create(
             course=self.course,
             title="Quiz 1",
             description="A short quiz",
             type="MCQ",
+            status="PUBLISHED",
             total_marks=2,
             questions=[
                 {
@@ -66,7 +81,7 @@ class AssignmentWorkflowTests(APITestCase):
                 }
             ],
             answer_key={"1": "A"},
-            due_date=timezone.now(),
+            due_date=timezone.now() + timedelta(days=1),
         )
 
         first_response = self.client.post(
@@ -81,22 +96,23 @@ class AssignmentWorkflowTests(APITestCase):
         )
 
         self.assertEqual(first_response.status_code, 201)
-        self.assertEqual(second_response.status_code, 200)
-        self.assertEqual(Submission.objects.filter(assignment=assignment, student=self.user).count(), 1)
+        self.assertEqual(second_response.status_code, 400)
+        self.assertEqual(Submission.objects.filter(assignment=assignment, student=self.student).count(), 1)
 
-        submission = Submission.objects.get(assignment=assignment, student=self.user)
-        self.assertEqual(submission.answers, {"1": "A"})
-        self.assertEqual(submission.ai_grade, 2)
-        self.assertIn("Correct option: A", submission.ai_feedback["overall_feedback"])
-        self.assertEqual(submission.score_breakdown[0]["correct_answer"], "A")
+        submission = Submission.objects.get(assignment=assignment, student=self.student)
+        self.assertEqual(submission.answers, {"1": "B"})
+        self.assertEqual(submission.ai_grade, 0)
+        self.assertIn("already submitted", second_response.data["detail"])
         self.assertIsNotNone(submission.submitted_at)
 
-    def test_resubmission_refreshes_submission_timestamp(self):
+    def test_student_cannot_delete_submission_to_force_a_retake(self):
+        self.authenticate(self.student)
         assignment = Assignment.objects.create(
             course=self.course,
             title="Quiz Timestamp",
             description="A short quiz",
             type="MCQ",
+            status="PUBLISHED",
             total_marks=2,
             questions=[
                 {
@@ -107,7 +123,7 @@ class AssignmentWorkflowTests(APITestCase):
                 }
             ],
             answer_key={"1": "A"},
-            due_date=timezone.now(),
+            due_date=timezone.now() + timedelta(days=1),
         )
 
         first_response = self.client.post(
@@ -117,26 +133,20 @@ class AssignmentWorkflowTests(APITestCase):
         )
         self.assertEqual(first_response.status_code, 201)
 
-        original_submission = Submission.objects.get(assignment=assignment, student=self.user)
-        old_timestamp = timezone.now() - timedelta(days=1)
-        Submission.objects.filter(id=original_submission.id).update(submitted_at=old_timestamp)
+        original_submission = Submission.objects.get(assignment=assignment, student=self.student)
+        delete_response = self.client.delete(reverse("submission-detail", args=[original_submission.id]))
 
-        second_response = self.client.post(
-            reverse("submission-create", args=[assignment.id]),
-            {"answers": {"1": "A"}},
-            format="json",
-        )
-
-        self.assertEqual(second_response.status_code, 200)
-        original_submission.refresh_from_db()
-        self.assertGreater(original_submission.submitted_at, old_timestamp)
+        self.assertEqual(delete_response.status_code, 403)
+        self.assertTrue(Submission.objects.filter(id=original_submission.id).exists())
 
     def test_submission_rejects_non_object_answers(self):
+        self.authenticate(self.student)
         assignment = Assignment.objects.create(
             course=self.course,
             title="Quiz 2",
             description="Another short quiz",
             type="MCQ",
+            status="PUBLISHED",
             total_marks=2,
             questions=[
                 {
@@ -147,7 +157,7 @@ class AssignmentWorkflowTests(APITestCase):
                 }
             ],
             answer_key={"1": {"correct_option": "A", "explanation": "A is correct."}},
-            due_date=timezone.now(),
+            due_date=timezone.now() + timedelta(days=1),
         )
 
         response = self.client.post(
@@ -159,11 +169,13 @@ class AssignmentWorkflowTests(APITestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_mcq_reasoning_includes_correct_answer_and_why_student_was_wrong(self):
+        self.authenticate(self.student)
         assignment = Assignment.objects.create(
             course=self.course,
             title="Quiz 3",
             description="Reasoning check",
             type="MCQ",
+            status="PUBLISHED",
             total_marks=2,
             questions=[
                 {
@@ -174,7 +186,7 @@ class AssignmentWorkflowTests(APITestCase):
                 }
             ],
             answer_key={"1": {"correct_option": "A", "explanation": "A is correct because it matches the course concept."}},
-            due_date=timezone.now(),
+            due_date=timezone.now() + timedelta(days=1),
         )
 
         response = self.client.post(
@@ -192,11 +204,13 @@ class AssignmentWorkflowTests(APITestCase):
 
     @mock.patch("apps.ai_service.services.call_ollama", side_effect=RuntimeError("offline"))
     def test_essay_submission_returns_per_question_reasoning(self, _mock_call_ollama):
+        self.authenticate(self.student)
         assignment = Assignment.objects.create(
             course=self.course,
             title="Essay 1",
             description="Explain the concepts",
             type="ESSAY",
+            status="PUBLISHED",
             total_marks=20,
             questions=[
                 {
@@ -211,7 +225,7 @@ class AssignmentWorkflowTests(APITestCase):
                 },
             ],
             rubric=[],
-            due_date=timezone.now(),
+            due_date=timezone.now() + timedelta(days=1),
         )
 
         response = self.client.post(
@@ -232,11 +246,13 @@ class AssignmentWorkflowTests(APITestCase):
         self.assertIn("answer_review", response.data["ai_feedback"])
 
     def test_assignment_list_includes_latest_submission(self):
+        self.authenticate(self.student)
         assignment = Assignment.objects.create(
             course=self.course,
             title="Quiz 3",
             description="A saved quiz",
             type="MCQ",
+            status="PUBLISHED",
             total_marks=2,
             questions=[
                 {
@@ -247,11 +263,11 @@ class AssignmentWorkflowTests(APITestCase):
                 }
             ],
             answer_key={"1": {"correct_option": "A", "explanation": "A is correct."}},
-            due_date=timezone.now(),
+            due_date=timezone.now() + timedelta(days=1),
         )
         submission = Submission.objects.create(
             assignment=assignment,
-            student=self.user,
+            student=self.student,
             answers={"1": "A"},
             status="GRADED",
             ai_grade=2,
@@ -275,42 +291,57 @@ class AssignmentWorkflowTests(APITestCase):
         self.assertEqual(response.data[0]["latest_submission"]["id"], submission.id)
         self.assertEqual(response.data[0]["latest_submission"]["answers"], {"1": "A"})
 
-    def test_submission_and_assignment_can_be_deleted_for_retake(self):
+    def test_teacher_can_override_assignment_marks_manually(self):
+        self.authenticate(self.teacher)
         assignment = Assignment.objects.create(
             course=self.course,
             title="Quiz 4",
-            description="Retake me",
-            type="MCQ",
-            total_marks=2,
+            description="Needs review",
+            type="ESSAY",
+            status="PUBLISHED",
+            total_marks=10,
             questions=[
                 {
                     "question_number": 1,
-                    "prompt": "Pick the correct answer.",
-                    "options": ["A", "B", "C", "D"],
-                    "marks": 2,
+                    "question_number": 1,
+                    "prompt": "Explain gradient descent.",
+                    "marks": 10,
                 }
             ],
-            answer_key={"1": {"correct_option": "A", "explanation": "A is correct."}},
-            due_date=timezone.now(),
+            rubric=[{"question_number": 1, "criteria": ["Mention optimization and reducing loss."]}],
+            due_date=timezone.now() + timedelta(days=1),
         )
         submission = Submission.objects.create(
             assignment=assignment,
-            student=self.user,
-            answers={"1": "B"},
+            student=self.student,
+            answers={"1": "Gradient descent updates weights."},
             status="GRADED",
-            ai_grade=0,
-            ai_feedback={"overall_feedback": "Try again."},
-            score_breakdown=[],
+            ai_grade=6,
+            ai_feedback={"overall_feedback": "Good start."},
+            score_breakdown=[
+                {
+                    "question_number": 1,
+                    "score": 6,
+                    "max_score": 10,
+                    "feedback": "Needs more detail.",
+                }
+            ],
             graded_at=timezone.now(),
         )
 
-        submission_response = self.client.delete(reverse("submission-detail", args=[submission.id]))
-        assignment_response = self.client.delete(reverse("assignment-detail", args=[assignment.id]))
+        response = self.client.patch(
+            reverse("submission-teacher-grade", args=[submission.id]),
+            {"teacher_grade": 8.5, "teacher_feedback": "Relevant answer, but one core step was missing."},
+            format="json",
+        )
 
-        self.assertEqual(submission_response.status_code, 204)
-        self.assertEqual(assignment_response.status_code, 204)
-        self.assertFalse(Submission.objects.filter(id=submission.id).exists())
-        self.assertFalse(Assignment.objects.filter(id=assignment.id).exists())
+        self.assertEqual(response.status_code, 200)
+        submission.refresh_from_db()
+        self.assertEqual(submission.teacher_grade, 8.5)
+        self.assertEqual(submission.final_grade, 8.5)
+        self.assertEqual(response.data["grade_source"], "TEACHER")
+        self.assertEqual(response.data["final_grade"], 8.5)
+        self.assertEqual(response.data["teacher_feedback"], "Relevant answer, but one core step was missing.")
 
     @mock.patch("apps.assignments.views.generate_assignment_for_course")
     def test_assignment_generation_prefers_completed_schedule_topics(self, mock_generate_assignment):
@@ -438,3 +469,108 @@ class AssignmentWorkflowTests(APITestCase):
         kwargs = mock_generate_assignment.call_args.kwargs
         self.assertEqual(kwargs["covered_topics"], ["Arrays", "Stacks", "Queues"])
         self.assertEqual(response.data["covered_until_class"], 3)
+
+
+class AssignmentTeacherVisibilityTests(APITestCase):
+    def setUp(self):
+        self.teacher = User.objects.create_user(
+            email="teacher@example.com",
+            password="testpass123",
+            name="Teacher",
+            role=UserRole.TEACHER,
+        )
+        self.student = User.objects.create_user(
+            email="student2@example.com",
+            password="testpass123",
+            name="Student Two",
+            role=UserRole.STUDENT,
+        )
+        teacher_token = Token.objects.create(user=self.teacher)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {teacher_token.key}")
+
+        self.course = Course.objects.create(
+            teacher=self.teacher,
+            name="Neural Systems",
+            extracted_topics=["Transformers"],
+        )
+        self.course.enrollments.create(student=self.student)
+
+    def test_teacher_assignment_list_includes_student_submissions(self):
+        assignment = Assignment.objects.create(
+            course=self.course,
+            title="Essay Review",
+            description="Explain the topic",
+            type="ESSAY",
+            status="PUBLISHED",
+            total_marks=20,
+            questions=[
+                {
+                    "question_number": 1,
+                    "prompt": "Explain attention.",
+                    "marks": 20,
+                }
+            ],
+            due_date=timezone.now() + timedelta(days=1),
+        )
+        submission = Submission.objects.create(
+            assignment=assignment,
+            student=self.student,
+            answers={"1": "Attention helps the model focus on relevant tokens."},
+            status="GRADED",
+            ai_grade=16,
+            ai_feedback={"overall_feedback": "Good answer."},
+            score_breakdown=[
+                {
+                    "question_number": 1,
+                    "score": 16,
+                    "max_score": 20,
+                    "feedback": "Solid explanation.",
+                }
+            ],
+            graded_at=timezone.now(),
+        )
+
+        response = self.client.get(reverse("assignment-list", args=[self.course.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["question_count"], 1)
+        self.assertEqual(response.data[0]["teacher_submission_summary"]["submitted_count"], 1)
+        self.assertEqual(response.data[0]["teacher_submission_summary"]["pending_count"], 0)
+        self.assertEqual(response.data[0]["class_submissions"][0]["id"], submission.id)
+        self.assertEqual(response.data[0]["class_submissions"][0]["student_name"], "Student Two")
+        self.assertEqual(
+            response.data[0]["class_submissions"][0]["answers"],
+            {"1": "Attention helps the model focus on relevant tokens."},
+        )
+
+    def test_student_cannot_submit_after_assignment_due_date(self):
+        student_token = Token.objects.create(user=self.student)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {student_token.key}")
+
+        assignment = Assignment.objects.create(
+            course=self.course,
+            title="Closed Quiz",
+            description="Too late",
+            type="MCQ",
+            status="PUBLISHED",
+            total_marks=2,
+            questions=[
+                {
+                    "question_number": 1,
+                    "prompt": "Pick the correct answer.",
+                    "options": ["A", "B", "C", "D"],
+                    "marks": 2,
+                }
+            ],
+            answer_key={"1": {"correct_option": "A", "explanation": "A is correct."}},
+            due_date=timezone.now() - timedelta(minutes=5),
+        )
+
+        response = self.client.post(
+            reverse("submission-create", args=[assignment.id]),
+            {"answers": {"1": "A"}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("due date has passed", response.data["detail"])

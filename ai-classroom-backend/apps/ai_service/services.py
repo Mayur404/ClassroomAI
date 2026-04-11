@@ -1524,58 +1524,93 @@ def _keyword_set(value: Any) -> set[str]:
     }
 
 
+def _assignment_rubric_by_number(assignment) -> dict[int, list[str]]:
+    rubric_by_number = {}
+    if not isinstance(assignment.rubric, list):
+        return rubric_by_number
+
+    for index, raw_entry in enumerate(assignment.rubric, start=1):
+        entry = _coerce_mapping(raw_entry)
+        if not entry:
+            continue
+        try:
+            question_number = int(entry.get("question_number", index))
+        except (TypeError, ValueError):
+            question_number = index
+        rubric_by_number[question_number] = _normalize_string_list(entry.get("criteria"))
+
+    return rubric_by_number
+
+
 def _heuristic_open_ended_result(question: dict, response_text: str) -> tuple[float, str]:
     cleaned_response = _normalize_spaces(response_text)
     word_count = len(re.findall(r"\b\w+\b", cleaned_response))
     if word_count == 0:
         return 0.0, "No answer submitted."
 
+    criteria_text = " ".join(_normalize_string_list(question.get("criteria")))
     prompt_keywords = _keyword_set(question.get("prompt"))
+    criteria_keywords = _keyword_set(criteria_text)
+    expected_keywords = prompt_keywords | criteria_keywords
     response_keywords = _keyword_set(cleaned_response)
-    keyword_overlap = len(prompt_keywords & response_keywords)
+    keyword_overlap = len(expected_keywords & response_keywords)
+    expected_keyword_count = len(expected_keywords)
+    overlap_ratio = (keyword_overlap / expected_keyword_count) if expected_keyword_count else 0.0
     has_example = bool(
         re.search(r"\b(for example|for instance|example|e\.g\.|such as)\b", cleaned_response, re.IGNORECASE)
     )
     multi_sentence = len(re.findall(r"[.!?]", cleaned_response)) >= 2 or "\n" in response_text
+    needs_example = bool(re.search(r"\b(example|application|use case|scenario)\b", f"{question.get('prompt', '')} {criteria_text}", re.IGNORECASE))
+
+    if expected_keyword_count and keyword_overlap == 0:
+        score_ratio = 0.2 if word_count >= 12 else 0.1
+    elif keyword_overlap <= 1:
+        score_ratio = 0.38 if word_count >= 12 else 0.24
+    elif keyword_overlap == 2:
+        score_ratio = 0.56 if word_count >= 14 else 0.46
+    else:
+        score_ratio = 0.7
+
+    if overlap_ratio >= 0.65:
+        score_ratio += 0.12
+    elif overlap_ratio >= 0.35:
+        score_ratio += 0.06
+    elif expected_keyword_count and word_count >= 18:
+        score_ratio -= 0.08
 
     if word_count >= 45:
-        score_ratio = 0.9
+        score_ratio += 0.08
     elif word_count >= 25:
-        score_ratio = 0.82
-    elif word_count >= 12:
-        score_ratio = 0.72
-    elif word_count >= 6:
-        score_ratio = 0.58
-    else:
-        score_ratio = 0.4
-
-    if keyword_overlap >= 2:
-        score_ratio += 0.12
-    elif keyword_overlap == 1:
-        score_ratio += 0.07
-    elif prompt_keywords and word_count >= 8:
+        score_ratio += 0.04
+    elif word_count < 8:
         score_ratio -= 0.08
 
     if has_example:
         score_ratio += 0.05
     if multi_sentence and word_count >= 18:
         score_ratio += 0.03
+    if needs_example and not has_example:
+        score_ratio -= 0.1
 
-    if keyword_overlap == 0 and word_count < 6:
-        score_ratio = min(score_ratio, 0.35)
+    if expected_keyword_count and keyword_overlap == 0:
+        score_ratio = min(score_ratio, 0.3)
+    if expected_keyword_count >= 4 and keyword_overlap <= 1:
+        score_ratio = min(score_ratio, 0.5)
+    if word_count < 5:
+        score_ratio = min(score_ratio, 0.2)
 
     score_ratio = max(0.0, min(score_ratio, 1.0))
 
     if score_ratio >= 0.92:
-        feedback = "Strong answer with clear understanding, useful detail, and a relevant example."
-    elif score_ratio >= 0.78:
-        feedback = "Good answer that shows solid understanding. Add a bit more precision or depth for full marks."
-    elif score_ratio >= 0.6:
-        feedback = "Reasonable answer with some relevant points. Expand the explanation or example to earn more marks."
-    elif score_ratio >= 0.35:
-        feedback = "The answer shows some effort, but it needs more course-specific detail and clearer explanation."
+        feedback = "Accurate, relevant, and complete answer. It covers the key points clearly."
+    elif score_ratio >= 0.75:
+        feedback = "Relevant answer with solid understanding. Add a little more precision or completeness for full marks."
+    elif score_ratio >= 0.55:
+        feedback = "Partly relevant answer, but some required points are missing, too general, or underdeveloped."
+    elif score_ratio >= 0.3:
+        feedback = "Limited relevance. The response touches the topic but needs clearer course-specific detail."
     else:
-        feedback = "Very limited answer. Add the main concept and at least one clear supporting point or example."
+        feedback = "Mostly off-topic, too vague, or too incomplete to earn many marks."
 
     return round(score_ratio, 4), feedback
 
@@ -1609,12 +1644,19 @@ def _format_open_ended_overall_feedback(total_score: float, total_marks: float, 
 def _fallback_grading(assignment, answers: dict) -> dict:
     total_score = 0.0
     score_breakdown = []
+    rubric_by_number = _assignment_rubric_by_number(assignment)
 
     for index, question in enumerate(assignment.questions or [], start=1):
         question_number = int(question.get("question_number", index))
         max_score = float(_positive_int(question.get("marks"), 1))
         response_text = _stringify(_answer_lookup(answers, question_number))
-        score_ratio, feedback = _heuristic_open_ended_result(question, response_text)
+        score_ratio, feedback = _heuristic_open_ended_result(
+            {
+                **question,
+                "criteria": rubric_by_number.get(question_number, []),
+            },
+            response_text,
+        )
         score = round(max_score * score_ratio, 2)
 
         total_score += score
@@ -1639,6 +1681,7 @@ def _fallback_grading(assignment, answers: dict) -> dict:
             "grading_mode": "fallback",
             "answer_review": score_breakdown,
         },
+        "grading_version": "v2-strict",
     }
 
 
@@ -1695,19 +1738,10 @@ def grade_submission(assignment, answers: dict) -> dict:
                 "grading_mode": "mcq-auto",
                 "answer_review": score_breakdown,
             },
+            "grading_version": "mcq-v1",
         }
 
-    rubric_by_number = {}
-    if isinstance(assignment.rubric, list):
-        for index, raw_entry in enumerate(assignment.rubric, start=1):
-            entry = _coerce_mapping(raw_entry)
-            if not entry:
-                continue
-            try:
-                question_number = int(entry.get("question_number", index))
-            except (TypeError, ValueError):
-                question_number = index
-            rubric_by_number[question_number] = _normalize_string_list(entry.get("criteria"))
+    rubric_by_number = _assignment_rubric_by_number(assignment)
 
     grading_questions = []
     for index, question in enumerate(assignment.questions or [], start=1):
@@ -1731,13 +1765,14 @@ Return JSON matching this schema:
 {json.dumps(grading_schema, ensure_ascii=True)}
 
 Requirements:
-- Be generous and lenient with grading. Award partial credit generously for effort and relevant keywords.
+- Grade strictly based on relevance, factual accuracy, and rubric coverage.
+- Do not award marks for effort, length, or generic filler by itself.
 - Return exactly one score_breakdown item for every question, using the same question_number and max_score.
-- Only give 0 marks if the answer is completely blank or clearly unrelated to the question.
-- If the student shows partial understanding, usually give them at least 60% to 80% of the marks.
-- Reserve scores below 40% for answers that are extremely short, mostly incorrect, or off-topic.
-- Use full marks when the answer is clearly relevant, mostly correct, and reasonably complete.
-- Keep feedback encouraging, highlight what they did right, and then suggest improvements.
+- Partial credit should only reflect directly relevant and correct points.
+- Keep vague, mostly off-topic, keyword-stuffed, or incomplete answers below 50% of the marks.
+- Use scores below 30% when the answer is blank, incorrect, or only minimally relevant.
+- Give full marks only when the answer is accurate, complete, and addresses all requested parts of the prompt.
+- Keep feedback concise and specific about what is missing or weak.
 - Do not invent student answers.
 - Return only valid JSON.
 """
@@ -1775,9 +1810,10 @@ Requirements:
                 "grading_mode": "llm",
                 "answer_review": score_breakdown,
             },
+            "grading_version": "v2-strict",
         }
     except Exception as exc:
-        logger.error("Ollama grading failed: %s", exc)
+        logger.error("Groq grading failed: %s", exc)
         return _fallback_grading(assignment, answers)
 
 
@@ -2364,4 +2400,3 @@ def _direct_evidence_answer(question: str, chunks: list[str]) -> str:
         "Here is the most relevant information I found in your course materials:\n\n"
         + "\n\n".join(excerpts)
     )
-

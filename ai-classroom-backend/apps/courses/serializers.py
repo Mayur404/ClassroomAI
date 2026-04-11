@@ -3,6 +3,7 @@ from rest_framework import serializers
 from .models import (
     ClassSchedule,
     Course,
+    CourseAnnouncement,
     CourseMaterial,
     Enrollment,
     ScheduleStatus,
@@ -35,9 +36,19 @@ class CourseMaterialSerializer(serializers.ModelSerializer):
         fields = ("id", "title", "file", "content_text", "extracted_topics", "parse_status", "created_at")
 
 
+class CourseAnnouncementSerializer(serializers.ModelSerializer):
+    teacher_name = serializers.CharField(source="teacher.name", read_only=True)
+
+    class Meta:
+        model = CourseAnnouncement
+        fields = ("id", "course", "teacher", "teacher_name", "title", "message", "created_at", "updated_at")
+        read_only_fields = ("course", "teacher", "teacher_name", "created_at", "updated_at")
+
+
 class CourseSerializer(serializers.ModelSerializer):
     schedule_items = ClassScheduleSerializer(many=True, read_only=True)
     materials = CourseMaterialSerializer(many=True, read_only=True)
+    announcements = CourseAnnouncementSerializer(many=True, read_only=True)
     teacher_name = serializers.CharField(source="teacher.name", read_only=True)
     assignment_count = serializers.SerializerMethodField()
     completed_class_count = serializers.SerializerMethodField()
@@ -58,6 +69,7 @@ class CourseSerializer(serializers.ModelSerializer):
             "syllabus_text",
             "syllabus_parse_status",
             "materials",
+            "announcements",
             "num_assignments",
             "assignment_weightage",
             "extracted_topics",

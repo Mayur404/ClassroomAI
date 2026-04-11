@@ -6,6 +6,7 @@ import logging
 from datetime import timedelta
 from django.utils import timezone
 from django.db.models import Count, Avg, Q
+from django.db.models.functions import Coalesce
 from apps.chat.models import ChatMessage
 from apps.submissions.models import Submission
 from apps.courses.models import Course
@@ -81,7 +82,7 @@ class CourseAnalyticsService:
             if not submissions.exists():
                 continue
             
-            avg_score = submissions.aggregate(avg=Avg('ai_grade'))['avg'] or 0
+            avg_score = submissions.aggregate(avg=Avg(Coalesce('teacher_grade', 'ai_grade')))['avg'] or 0
             submission_count = submissions.count()
             
             results.append({
@@ -104,7 +105,7 @@ class CourseAnalyticsService:
         
         struggle_topics = []
         for submission in submissions:
-            if submission.ai_grade < 50:  # Below 50% is struggle
+            if submission.final_grade < 50:  # Below 50% is struggle
                 struggle_topics.append(submission.assignment.title)
         
         return struggle_topics
