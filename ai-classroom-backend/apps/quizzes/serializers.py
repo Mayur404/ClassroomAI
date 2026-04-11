@@ -1,4 +1,5 @@
 from django.db import transaction
+import random
 from rest_framework import serializers
 
 from .models import (
@@ -75,15 +76,26 @@ class QuizQuestionTeacherSerializer(serializers.ModelSerializer):
 
 
 class QuizQuestionStudentSerializer(serializers.ModelSerializer):
-    options = QuizOptionStudentSerializer(many=True)
+    options = serializers.SerializerMethodField()
 
     class Meta:
         model = QuizQuestion
         fields = ("id", "question_text", "difficulty", "order_index", "options")
 
+    def get_options(self, obj):
+        options = list(obj.options.all())
+        student_id = self.context.get("student_id")
+        quiz_id = self.context.get("quiz_id")
+        should_shuffle = bool(self.context.get("shuffle_options", False))
+        if should_shuffle and student_id and quiz_id:
+            rng = random.Random(f"{quiz_id}:{student_id}:{obj.id}:options")
+            rng.shuffle(options)
+        return QuizOptionStudentSerializer(options, many=True).data
+
 
 class QuizTeacherSerializer(serializers.ModelSerializer):
     questions = QuizQuestionTeacherSerializer(many=True, read_only=True)
+    question_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Quiz
@@ -97,20 +109,38 @@ class QuizTeacherSerializer(serializers.ModelSerializer):
             "title",
             "instructions",
             "time_limit_minutes",
+            "scheduled_for",
             "published_at",
             "due_at",
             "is_private",
+            "shuffle_questions",
+            "shuffle_options",
             "low_score_threshold",
             "source_material_snapshot",
+            "question_count",
             "questions",
             "created_at",
             "updated_at",
         )
         read_only_fields = ("creator", "published_at", "source_material_snapshot", "created_at", "updated_at")
 
+    def validate(self, attrs):
+        scheduled_for = attrs.get("scheduled_for", getattr(self.instance, "scheduled_for", None))
+        due_at = attrs.get("due_at", getattr(self.instance, "due_at", None))
+        if scheduled_for and due_at and due_at <= scheduled_for:
+            raise serializers.ValidationError("Due time must be after scheduled time.")
+        return attrs
+
+    def get_question_count(self, obj):
+        annotated = getattr(obj, "question_count_value", None)
+        if annotated is not None:
+            return int(annotated)
+        return obj.questions.count()
+
 
 class QuizStudentSerializer(serializers.ModelSerializer):
     questions = serializers.SerializerMethodField()
+    question_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Quiz
@@ -123,8 +153,10 @@ class QuizStudentSerializer(serializers.ModelSerializer):
             "title",
             "instructions",
             "time_limit_minutes",
+            "scheduled_for",
             "due_at",
             "is_private",
+            "question_count",
             "questions",
             "created_at",
         )
@@ -133,7 +165,32 @@ class QuizStudentSerializer(serializers.ModelSerializer):
         include = bool(self.context.get("include_questions", False))
         if not include:
             return []
-        return QuizQuestionStudentSerializer(obj.questions.all(), many=True).data
+        student_id = self.context.get("student_id")
+        questions = list(obj.questions.all())
+
+        if bool(obj.shuffle_questions) and student_id:
+            rng = random.Random(f"{obj.id}:{student_id}:questions")
+            rng.shuffle(questions)
+
+        payload = QuizQuestionStudentSerializer(
+            questions,
+            many=True,
+            context={
+                "student_id": student_id,
+                "quiz_id": obj.id,
+                "shuffle_options": bool(obj.shuffle_options),
+            },
+        ).data
+
+        for idx, item in enumerate(payload, start=1):
+            item["order_index"] = idx
+        return payload
+
+    def get_question_count(self, obj):
+        annotated = getattr(obj, "question_count_value", None)
+        if annotated is not None:
+            return int(annotated)
+        return obj.questions.count()
 
 
 class QuizGenerateSerializer(serializers.Serializer):
@@ -141,11 +198,21 @@ class QuizGenerateSerializer(serializers.Serializer):
     instructions = serializers.CharField(required=False, allow_blank=True)
     question_count = serializers.IntegerField(min_value=3, max_value=25, required=False, default=8)
     time_limit_minutes = serializers.IntegerField(min_value=1, max_value=180, required=False)
+    scheduled_for = serializers.DateTimeField(required=False, allow_null=True)
     due_at = serializers.DateTimeField(required=False)
+    shuffle_questions = serializers.BooleanField(required=False, default=True)
+    shuffle_options = serializers.BooleanField(required=False, default=True)
     low_score_threshold = serializers.IntegerField(min_value=1, max_value=100, required=False, default=60)
     module_scope = serializers.ChoiceField(choices=("single", "multiple", "all"), required=False, default="single")
     session_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, allow_empty=True)
     include_all_modules = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        scheduled_for = attrs.get("scheduled_for")
+        due_at = attrs.get("due_at")
+        if scheduled_for and due_at and due_at <= scheduled_for:
+            raise serializers.ValidationError("Due time must be after scheduled time.")
+        return attrs
 
 
 class QuizQuestionCreateSerializer(serializers.Serializer):

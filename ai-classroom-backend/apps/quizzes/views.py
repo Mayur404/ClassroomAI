@@ -133,22 +133,42 @@ def _attempt_results_payload(attempt: QuizAttempt) -> list[dict]:
     return detailed
 
 
+def _is_live_quiz_available_for_students(quiz: Quiz) -> bool:
+    if quiz.mode != QuizMode.LIVE:
+        return True
+    if quiz.state != QuizState.PUBLISHED:
+        return False
+    now = timezone.now()
+    if quiz.scheduled_for and quiz.scheduled_for > now:
+        return False
+    if quiz.due_at and quiz.due_at < now:
+        return False
+    return True
+
+
 class QuizListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, course_id):
         course = _resolve_course_for_user(request.user, course_id)
 
-        queryset = Quiz.objects.filter(course=course).select_related("session", "creator")
+        queryset = (
+            Quiz.objects.filter(course=course)
+            .select_related("session", "creator")
+            .annotate(question_count_value=Count("questions", distinct=True))
+        )
         if request.user.role == "TEACHER":
             queryset = queryset.exclude(mode=QuizMode.PRACTICE).filter(creator=request.user)
             data = QuizTeacherSerializer(queryset, many=True).data
         else:
-            queryset = queryset.filter(
+            live_queryset = queryset.filter(
+                mode=QuizMode.LIVE,
                 state=QuizState.PUBLISHED,
-            ) | queryset.filter(mode=QuizMode.PRACTICE, creator=request.user)
+            )
+            practice_queryset = queryset.filter(mode=QuizMode.PRACTICE, creator=request.user)
+            queryset = live_queryset | practice_queryset
             queryset = queryset.distinct()
-            data = QuizStudentSerializer(queryset, many=True).data
+            data = QuizStudentSerializer(queryset, many=True, context={"student_id": request.user.id}).data
             quiz_ids = [item["id"] for item in data]
             submitted_ids = set(
                 QuizAttempt.objects.filter(
@@ -212,8 +232,11 @@ class QuizGenerateView(APIView):
                 title=generated_title,
                 instructions=serializer.validated_data.get("instructions", ""),
                 time_limit_minutes=serializer.validated_data.get("time_limit_minutes"),
+                scheduled_for=serializer.validated_data.get("scheduled_for"),
                 due_at=serializer.validated_data.get("due_at"),
                 is_private=False,
+                shuffle_questions=serializer.validated_data.get("shuffle_questions", True),
+                shuffle_options=serializer.validated_data.get("shuffle_options", True),
                 low_score_threshold=serializer.validated_data.get("low_score_threshold", 60),
                 source_material_snapshot=snapshot,
             )
@@ -292,6 +315,8 @@ class PracticeQuizGenerateView(APIView):
                 instructions=serializer.validated_data.get("instructions", ""),
                 time_limit_minutes=serializer.validated_data.get("time_limit_minutes"),
                 is_private=True,
+                shuffle_questions=True,
+                shuffle_options=True,
                 source_material_snapshot=snapshot,
             )
 
@@ -315,7 +340,13 @@ class PracticeQuizGenerateView(APIView):
                         is_correct=key == correct_key,
                     )
 
-        return Response(QuizStudentSerializer(quiz, context={"include_questions": True}).data, status=status.HTTP_201_CREATED)
+        return Response(
+            QuizStudentSerializer(
+                quiz,
+                context={"include_questions": True, "student_id": request.user.id},
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class QuizDetailView(APIView):
@@ -330,10 +361,13 @@ class QuizDetailView(APIView):
 
         if quiz.mode == QuizMode.PRACTICE and quiz.creator_id != request.user.id:
             raise PermissionDenied("This practice quiz is private.")
-        if quiz.mode == QuizMode.LIVE and quiz.state != QuizState.PUBLISHED:
-            raise PermissionDenied("This quiz is not published yet.")
+        if not _is_live_quiz_available_for_students(quiz):
+            raise PermissionDenied("This quiz is not available right now.")
 
-        payload = QuizStudentSerializer(quiz, context={"include_questions": True}).data
+        payload = QuizStudentSerializer(
+            quiz,
+            context={"include_questions": True, "student_id": request.user.id},
+        ).data
         latest_attempt = QuizAttempt.objects.filter(
             quiz=quiz,
             student=request.user,
@@ -490,8 +524,6 @@ class QuizAttemptStartView(APIView):
             raise PermissionDenied("Only students can attempt quizzes.")
 
         quiz = get_object_or_404(Quiz.objects.select_related("course"), id=quiz_id, course__enrollments__student=request.user)
-        if quiz.mode == QuizMode.LIVE and quiz.state != QuizState.PUBLISHED:
-            return Response({"detail": "Quiz is not live."}, status=status.HTTP_400_BAD_REQUEST)
         if quiz.mode == QuizMode.PRACTICE and quiz.creator_id != request.user.id:
             return Response({"detail": "This practice quiz is private."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -502,7 +534,10 @@ class QuizAttemptStartView(APIView):
                 status=AttemptStatus.SUBMITTED,
             ).order_by("-submitted_at").first()
             if submitted:
-                quiz_payload = QuizStudentSerializer(quiz, context={"include_questions": True}).data
+                quiz_payload = QuizStudentSerializer(
+                    quiz,
+                    context={"include_questions": True, "student_id": request.user.id},
+                ).data
                 return Response(
                     {
                         "attempt_id": submitted.id,
@@ -516,6 +551,9 @@ class QuizAttemptStartView(APIView):
                         "locked": True,
                     }
                 )
+
+        if not _is_live_quiz_available_for_students(quiz):
+            return Response({"detail": "Quiz is not live."}, status=status.HTTP_400_BAD_REQUEST)
 
         existing = QuizAttempt.objects.filter(
             quiz=quiz,
@@ -535,7 +573,10 @@ class QuizAttemptStartView(APIView):
             for question in quiz.questions.all():
                 QuizAttemptAnswer.objects.create(attempt=attempt, question=question)
 
-        quiz_payload = QuizStudentSerializer(quiz, context={"include_questions": True}).data
+        quiz_payload = QuizStudentSerializer(
+            quiz,
+            context={"include_questions": True, "student_id": request.user.id},
+        ).data
         return Response({"attempt_id": attempt.id, "quiz": quiz_payload, "status": attempt.status})
 
 
