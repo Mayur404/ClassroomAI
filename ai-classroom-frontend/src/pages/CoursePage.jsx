@@ -28,7 +28,6 @@ export default function CoursePage() {
   const [activeTab, setActiveTab] = useState("stream");
   const [answers, setAnswers] = useState({});
   const [results, setResults] = useState({});
-  const [precheckResults, setPrecheckResults] = useState({});
   const [materialPreviewById, setMaterialPreviewById] = useState({});
   const [classworkQuizSessionId, setClassworkQuizSessionId] = useState(null);
   const [classworkScopeMode, setClassworkScopeMode] = useState("single");
@@ -358,16 +357,6 @@ export default function CoursePage() {
     onSuccess: ({ assignmentId, data }) => {
       setResults((prev) => ({ ...prev, [assignmentId]: data }));
       queryClient.invalidateQueries({ queryKey: ["assignments", courseId] });
-    },
-  });
-
-  const precheckAssignment = useMutation({
-    mutationFn: async ({ assignmentId, answersPayload }) => {
-      const res = await client.post(`/assignments/${assignmentId}/precheck/`, { answers: answersPayload });
-      return { assignmentId, data: res.data };
-    },
-    onSuccess: ({ assignmentId, data }) => {
-      setPrecheckResults((prev) => ({ ...prev, [assignmentId]: data }));
     },
   });
 
@@ -2444,13 +2433,6 @@ export default function CoursePage() {
                               >
                                 {submitAssignment.isPending ? "Submitting..." : "Submit Answers"}
                               </button>
-                              <button
-                                className="btn-secondary"
-                                onClick={() => precheckAssignment.mutate({ assignmentId: a.id, answersPayload: answers[a.id] || {} })}
-                                disabled={precheckAssignment.isPending}
-                              >
-                                {precheckAssignment.isPending ? "Checking..." : "Pre-check with AI"}
-                              </button>
                             </>
                           ) : (
                             <p className="text-muted text-small assignment-inline-note">
@@ -2476,30 +2458,6 @@ export default function CoursePage() {
                           )}
                           {submissionFeedback(resultData) && (
                             <p className="text-muted">{submissionFeedback(resultData)}</p>
-                          )}
-                        </div>
-                      )}
-
-                      {precheckResults[a.id] && studentCanSubmit && (
-                        <div className="grading-result panel compact assignment-precheck-shell">
-                          <h4>Pre-check Preview</h4>
-                          <div className="grading-score">
-                            Estimated Score: <strong>{precheckResults[a.id].total_score}</strong> / {a.total_marks}
-                          </div>
-                          <p className="text-muted"><strong>Rating:</strong> {ratingFromPercent(precheckResults[a.id].total_score, a.total_marks)}</p>
-                          <p className="text-muted">{precheckResults[a.id].overall_feedback}</p>
-                          {(precheckResults[a.id].score_breakdown || []).length > 0 && (
-                            <div className="stack compact">
-                              {(precheckResults[a.id].score_breakdown || []).slice(0, 6).map((item, idx) => (
-                                <div key={idx} className="material-card">
-                                  <p className="text-muted text-small">
-                                    <strong>Q{item.question_number || idx + 1}:</strong> {item.score || 0} / {item.max_score || 0}
-                                  </p>
-                                  {item.feedback && <p className="text-muted text-small">{item.feedback}</p>}
-                                  {item.reasoning && <p className="text-muted text-small">{item.reasoning}</p>}
-                                </div>
-                              ))}
-                            </div>
                           )}
                         </div>
                       )}

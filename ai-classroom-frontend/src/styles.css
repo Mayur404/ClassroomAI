@@ -1456,7 +1456,6 @@ input::placeholder, textarea::placeholder {
 }
 
 .assignment-result-shell,
-.assignment-precheck-shell,
 .assignment-teacher-shell {
   display: grid;
   gap: 0.8rem;

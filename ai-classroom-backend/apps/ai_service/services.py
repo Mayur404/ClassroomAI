@@ -1542,11 +1542,21 @@ def _assignment_rubric_by_number(assignment) -> dict[int, list[str]]:
     return rubric_by_number
 
 
-def _heuristic_open_ended_result(question: dict, response_text: str) -> tuple[float, str]:
+def _open_ended_signals(question: dict, response_text: str) -> dict[str, Any]:
     cleaned_response = _normalize_spaces(response_text)
     word_count = len(re.findall(r"\b\w+\b", cleaned_response))
     if word_count == 0:
-        return 0.0, "No answer submitted."
+        return {
+            "score_ratio": 0.0,
+            "feedback": "No answer submitted.",
+            "word_count": 0,
+            "keyword_overlap": 0,
+            "expected_keyword_count": 0,
+            "overlap_ratio": 0.0,
+            "has_example": False,
+            "multi_sentence": False,
+            "needs_example": False,
+        }
 
     criteria_text = " ".join(_normalize_string_list(question.get("criteria")))
     prompt_keywords = _keyword_set(question.get("prompt"))
@@ -1612,7 +1622,104 @@ def _heuristic_open_ended_result(question: dict, response_text: str) -> tuple[fl
     else:
         feedback = "Mostly off-topic, too vague, or too incomplete to earn many marks."
 
-    return round(score_ratio, 4), feedback
+    return {
+        "score_ratio": round(score_ratio, 4),
+        "feedback": feedback,
+        "word_count": word_count,
+        "keyword_overlap": keyword_overlap,
+        "expected_keyword_count": expected_keyword_count,
+        "overlap_ratio": round(overlap_ratio, 4),
+        "has_example": has_example,
+        "multi_sentence": multi_sentence,
+        "needs_example": needs_example,
+    }
+
+
+def _heuristic_open_ended_result(question: dict, response_text: str) -> tuple[float, str]:
+    signals = _open_ended_signals(question, response_text)
+    return float(signals["score_ratio"]), str(signals["feedback"])
+
+
+def _calibrate_open_ended_score_breakdown(assignment, answers: dict, score_breakdown: list[dict]) -> list[dict]:
+    rubric_by_number = _assignment_rubric_by_number(assignment)
+    question_map = {
+        int(question.get("question_number", index)): question
+        for index, question in enumerate(assignment.questions or [], start=1)
+    }
+    calibrated_breakdown = []
+
+    for index, item in enumerate(score_breakdown, start=1):
+        question_number = int(item.get("question_number", index))
+        question = question_map.get(question_number, {})
+        max_score = float(item.get("max_score") or _positive_int(question.get("marks"), 1))
+        response_text = _stringify(_answer_lookup(answers, question_number))
+        signals = _open_ended_signals(
+            {
+                **question,
+                "criteria": rubric_by_number.get(question_number, []),
+            },
+            response_text,
+        )
+
+        try:
+            llm_score = float(item.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            llm_score = 0.0
+        llm_score = max(0.0, min(llm_score, max_score))
+        llm_ratio = (llm_score / max_score) if max_score else 0.0
+        heuristic_ratio = float(signals["score_ratio"])
+
+        red_flags = 0
+        if signals["expected_keyword_count"] and signals["keyword_overlap"] == 0:
+            red_flags += 2
+        elif signals["expected_keyword_count"] >= 4 and signals["keyword_overlap"] <= 1:
+            red_flags += 1
+        if signals["needs_example"] and not signals["has_example"]:
+            red_flags += 1
+        if signals["word_count"] < 8:
+            red_flags += 1
+        if signals["word_count"] < 15 and not signals["multi_sentence"]:
+            red_flags += 1
+
+        cap_ratio = 1.0
+        if signals["expected_keyword_count"] and signals["keyword_overlap"] == 0:
+            cap_ratio = min(cap_ratio, 0.35)
+        elif signals["expected_keyword_count"] >= 4 and signals["keyword_overlap"] <= 1:
+            cap_ratio = min(cap_ratio, 0.68)
+        if signals["needs_example"] and not signals["has_example"]:
+            cap_ratio = min(cap_ratio, 0.74)
+        if signals["word_count"] < 8:
+            cap_ratio = min(cap_ratio, 0.6)
+
+        score_gap = llm_ratio - heuristic_ratio
+        if red_flags >= 3 and score_gap >= 0.35:
+            cap_ratio = min(cap_ratio, heuristic_ratio + 0.22)
+        elif red_flags >= 2 and score_gap >= 0.28:
+            cap_ratio = min(cap_ratio, heuristic_ratio + 0.28)
+
+        calibrated_score = round(min(llm_ratio, cap_ratio) * max_score, 2)
+        calibrated_item = dict(item)
+        calibrated_item["score"] = calibrated_score
+        calibrated_item["max_score"] = max_score
+        calibrated_item["student_answer"] = _stringify(item.get("student_answer"), response_text)
+
+        if calibrated_score + 0.01 < llm_score:
+            current_feedback = _stringify(
+                calibrated_item.get("reasoning") or calibrated_item.get("feedback"),
+                signals["feedback"],
+            )
+            if signals["needs_example"] and not signals["has_example"]:
+                current_feedback = f"{current_feedback} The requested example or application is missing."
+            elif signals["expected_keyword_count"] and signals["keyword_overlap"] <= 1:
+                current_feedback = f"{current_feedback} Add more directly relevant course-specific points."
+            elif signals["word_count"] < 8:
+                current_feedback = f"{current_feedback} The answer is too brief for a high score."
+            calibrated_item["feedback"] = current_feedback
+            calibrated_item["reasoning"] = current_feedback
+
+        calibrated_breakdown.append(calibrated_item)
+
+    return calibrated_breakdown
 
 
 def _has_substantive_open_ended_answer(assignment, answers: dict) -> bool:
@@ -1768,9 +1875,12 @@ Requirements:
 - Grade strictly based on relevance, factual accuracy, and rubric coverage.
 - Do not award marks for effort, length, or generic filler by itself.
 - Return exactly one score_breakdown item for every question, using the same question_number and max_score.
+- For each question, check whether every requested part of the prompt was answered before awarding marks.
 - Partial credit should only reflect directly relevant and correct points.
 - Keep vague, mostly off-topic, keyword-stuffed, or incomplete answers below 50% of the marks.
 - Use scores below 30% when the answer is blank, incorrect, or only minimally relevant.
+- If the prompt asks for an example, application, comparison, or multiple parts, missing that part must reduce the score clearly.
+- Short answers should not receive high marks unless they completely answer a very narrow question.
 - Give full marks only when the answer is accurate, complete, and addresses all requested parts of the prompt.
 - Keep feedback concise and specific about what is missing or weak.
 - Do not invent student answers.
@@ -1792,6 +1902,7 @@ Requirements:
             answers,
             parsed.score_breakdown,
         )
+        score_breakdown = _calibrate_open_ended_score_breakdown(assignment, answers, score_breakdown)
         if _should_recover_open_ended_grading(score_breakdown, assignment, answers):
             recovered = _fallback_grading(assignment, answers)
             recovered["ai_feedback"]["grading_mode"] = "fallback-recovered"

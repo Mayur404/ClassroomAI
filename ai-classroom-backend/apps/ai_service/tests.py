@@ -130,13 +130,45 @@ class EssayGradingTests(SimpleTestCase):
 
         result = grade_submission(
             assignment=assignment,
-            answers={"1": "Photosynthesis lets plants make food from sunlight and store energy in glucose."},
+            answers={
+                "1": (
+                    "Photosynthesis lets plants make food from sunlight and store energy in glucose. "
+                    "For example, spinach leaves use sunlight to make glucose."
+                )
+            },
         )
 
         self.assertEqual(result["total_score"], 16.0)
         self.assertEqual(result["score_breakdown"][0]["score"], 16.0)
         self.assertEqual(result["score_breakdown"][0]["max_score"], 20.0)
         self.assertIn("Good understanding", result["score_breakdown"][0]["feedback"])
+
+    @mock.patch("apps.ai_service.services.call_ollama")
+    def test_grade_submission_calibrates_overgenerous_short_answer_scores(self, mock_call_ollama):
+        assignment = self._essay_assignment()
+        mock_call_ollama.return_value = json.dumps(
+            {
+                "total_score": 18,
+                "score_breakdown": [
+                    {
+                        "question_number": 1,
+                        "score": 18,
+                        "max_score": 20,
+                        "feedback": "Good answer.",
+                        "student_answer": "Photosynthesis makes food.",
+                    }
+                ],
+                "overall_feedback": "Strong work.",
+            }
+        )
+
+        result = grade_submission(
+            assignment=assignment,
+            answers={"1": "Photosynthesis makes food."},
+        )
+
+        self.assertLess(result["total_score"], 15.0)
+        self.assertIn("example", result["score_breakdown"][0]["feedback"].lower())
 
     def test_fallback_grading_stays_moderate_for_short_but_relevant_essay_answers(self):
         assignment = self._essay_assignment(marks=10)

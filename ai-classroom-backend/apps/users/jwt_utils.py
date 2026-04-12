@@ -14,15 +14,17 @@ def _jwt_secret() -> str:
 
 def _base_payload(user, token_type: str, minutes: int) -> dict:
     issued_at = _now_utc()
-    expires_at = issued_at + timedelta(minutes=minutes)
-    return {
+    payload = {
         "sub": str(user.id),
         "email": user.email,
         "role": user.role,
         "type": token_type,
         "iat": int(issued_at.timestamp()),
-        "exp": int(expires_at.timestamp()),
     }
+    if not getattr(settings, "JWT_NEVER_EXPIRES", False):
+        expires_at = issued_at + timedelta(minutes=minutes)
+        payload["exp"] = int(expires_at.timestamp())
+    return payload
 
 
 def issue_access_token(user) -> str:

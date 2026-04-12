@@ -57,6 +57,7 @@ client.interceptors.response.use(
       originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
       return client(originalRequest);
     } catch (refreshError) {
+      localStorage.removeItem("ai-classroom-token");
       localStorage.removeItem("ai-classroom-access-token");
       localStorage.removeItem("ai-classroom-refresh-token");
       return Promise.reject(refreshError);

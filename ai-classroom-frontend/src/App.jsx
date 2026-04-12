@@ -17,7 +17,7 @@ function ProtectedRoute({ children }) {
 }
 
 function Layout() {
-  const { user, logout } = useAuth();
+  const { user, logout, isBootstrapping } = useAuth();
   const [isCreating, setIsCreating] = useState(false);
   const [newCourseName, setNewCourseName] = useState("");
   const [inviteCode, setInviteCode] = useState("");
@@ -73,12 +73,16 @@ function Layout() {
     joinCourse.mutate(inviteCode.trim().toUpperCase());
   };
 
+  if (isBootstrapping) {
+    return <div className="loading-screen">Loading account...</div>;
+  }
+
   if (!user) {
     return (
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
-        <Route path="*" element={<Navigate to="/" />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
   }

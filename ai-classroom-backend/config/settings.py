@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     SECURE_HSTS_SECONDS: int = Field(default=0)
     SECURE_HSTS_INCLUDE_SUBDOMAINS: bool = Field(default=False)
     SECURE_HSTS_PRELOAD: bool = Field(default=False)
+    JWT_NEVER_EXPIRES: bool = Field(default=True)
     JWT_ACCESS_TOKEN_MINUTES: int = Field(default=40)
     JWT_REFRESH_TOKEN_MINUTES: int = Field(default=60 * 24 * 7)
     
@@ -468,6 +469,7 @@ SEARCH_CACHE_TIMEOUT = settings.SEARCH_CACHE_TIMEOUT
 
 JWT_ACCESS_TOKEN_MINUTES = settings.JWT_ACCESS_TOKEN_MINUTES
 JWT_REFRESH_TOKEN_MINUTES = settings.JWT_REFRESH_TOKEN_MINUTES
+JWT_NEVER_EXPIRES = settings.JWT_NEVER_EXPIRES
 
 # ============================================================================
 # SENTRY ERROR TRACKING (Optional)

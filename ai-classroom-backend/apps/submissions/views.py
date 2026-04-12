@@ -116,36 +116,3 @@ class SubmissionTeacherGradeView(APIView):
         submission.status = SubmissionStatus.GRADED
         submission.save(update_fields=["teacher_grade", "teacher_feedback", "teacher_graded_at", "status"])
         return Response(SubmissionSerializer(submission).data, status=status.HTTP_200_OK)
-
-
-class SubmissionPrecheckView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, assignment_id):
-        if request.user.role != "STUDENT":
-            raise PermissionDenied("Only students can pre-check submissions.")
-        assignment = get_object_or_404(
-            Assignment.objects.select_related("course"),
-            id=assignment_id,
-            course__enrollments__student=request.user,
-        )
-        if assignment.status != AssignmentStatus.PUBLISHED:
-            return Response({"detail": "This assignment is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
-        if assignment.due_date and assignment.due_date <= timezone.now():
-            return Response({"detail": "This assignment is closed because the due date has passed."}, status=status.HTTP_400_BAD_REQUEST)
-        answers = request.data.get("answers", {})
-        if not isinstance(answers, dict) or not answers:
-            return Response({"detail": "answers must be a non-empty object"}, status=status.HTTP_400_BAD_REQUEST)
-
-        result = grade_submission(assignment=assignment, answers=answers)
-        return Response(
-            {
-                "preview": True,
-                "assignment_id": assignment.id,
-                "total_score": result.get("total_score", 0),
-                "overall_feedback": result.get("overall_feedback", ""),
-                "score_breakdown": result.get("score_breakdown", []),
-                "ai_feedback": result.get("ai_feedback", {}),
-            },
-            status=status.HTTP_200_OK,
-        )
