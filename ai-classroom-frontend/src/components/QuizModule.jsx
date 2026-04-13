@@ -340,6 +340,18 @@ export default function QuizModule({ courseId, role, scheduleItems = [], presetQ
     if (option.is_selected && !option.is_correct) className += " is-incorrect";
     return className;
   };
+  const alertHeadline = (alert) => {
+    if (alert.alert_type === "POOR_PERFORMANCE") {
+      return `${alert.student_name} is consistently performing below target`;
+    }
+    return `${alert.student_name} scored below the quiz threshold`;
+  };
+  const alertDetail = (alert) => {
+    if (alert.alert_type === "POOR_PERFORMANCE") {
+      return `Recent average ${alert.actual_percent}% across live quizzes, below the ${alert.threshold_percent}% target. Latest quiz: ${alert.quiz_title || `#${alert.quiz}`}.`;
+    }
+    return `${alert.quiz_title || `Quiz #${alert.quiz}`} • ${alert.actual_percent}% score, below the ${alert.threshold_percent}% threshold.`;
+  };
 
   return (
     <section className="panel stack compact">
@@ -442,11 +454,14 @@ export default function QuizModule({ courseId, role, scheduleItems = [], presetQ
 
       {isTeacher && (alertsQuery.data || []).length > 0 && (
         <div className="panel compact stack">
-          <p className="eyebrow">Low Score Alerts (&lt; 60%)</p>
+          <p className="eyebrow">Teacher Alerts</p>
           {(alertsQuery.data || []).slice(0, 8).map((alert) => (
             <div key={alert.id} className="material-card">
-              <strong>{alert.student_name}</strong>
-              <p className="text-muted text-small">Quiz #{alert.quiz} • {alert.actual_percent}%</p>
+              <div className="material-info">
+                <strong>{alertHeadline(alert)}</strong>
+                <span className="chip">{alert.alert_type_label || alert.alert_type}</span>
+              </div>
+              <p className="text-muted text-small">{alertDetail(alert)}</p>
             </div>
           ))}
         </div>

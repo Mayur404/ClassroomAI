@@ -263,6 +263,8 @@ class QuizAttemptSerializer(serializers.ModelSerializer):
 
 class QuizAlertSerializer(serializers.ModelSerializer):
     student_name = serializers.CharField(source="student.name", read_only=True)
+    quiz_title = serializers.CharField(source="quiz.title", read_only=True)
+    alert_type_label = serializers.CharField(source="get_alert_type_display", read_only=True)
 
     class Meta:
         model = QuizAlert
@@ -274,6 +276,8 @@ class QuizAlertSerializer(serializers.ModelSerializer):
             "student_name",
             "attempt",
             "alert_type",
+            "alert_type_label",
+            "quiz_title",
             "threshold_percent",
             "actual_percent",
             "is_read",

@@ -99,6 +99,49 @@ def _create_low_score_alert(attempt: QuizAttempt):
     )
 
 
+def _create_poor_performance_alert(attempt: QuizAttempt):
+    quiz = attempt.quiz
+    recent_attempts = list(
+        QuizAttempt.objects.filter(
+            quiz__course=quiz.course,
+            quiz__mode=QuizMode.LIVE,
+            student=attempt.student,
+            status=AttemptStatus.SUBMITTED,
+        )
+        .select_related("quiz")
+        .order_by("-submitted_at")[:3]
+    )
+    if len(recent_attempts) < 2:
+        return
+
+    threshold = float(quiz.low_score_threshold)
+    recent_average = round(
+        sum(float(item.percentage or 0) for item in recent_attempts) / len(recent_attempts),
+        2,
+    )
+    if recent_average >= threshold:
+        return
+
+    duplicate_exists = QuizAlert.objects.filter(
+        course=quiz.course,
+        student=attempt.student,
+        alert_type=AlertType.POOR_PERFORMANCE,
+        is_read=False,
+    ).exists()
+    if duplicate_exists:
+        return
+
+    QuizAlert.objects.create(
+        course=quiz.course,
+        quiz=quiz,
+        student=attempt.student,
+        attempt=attempt,
+        alert_type=AlertType.POOR_PERFORMANCE,
+        threshold_percent=threshold,
+        actual_percent=recent_average,
+    )
+
+
 def _attempt_results_payload(attempt: QuizAttempt) -> list[dict]:
     detailed = []
     answer_rows = QuizAttemptAnswer.objects.filter(attempt=attempt).select_related("question").prefetch_related("question__options")
@@ -661,6 +704,7 @@ class QuizAttemptSubmitView(APIView):
 
         if attempt.quiz.mode == QuizMode.LIVE:
             _create_low_score_alert(attempt)
+            _create_poor_performance_alert(attempt)
 
         detailed = _attempt_results_payload(attempt)
 

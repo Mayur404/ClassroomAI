@@ -251,6 +251,12 @@ export default function CoursePage() {
     enabled: !!courseId,
   });
 
+  const teacherQuizAlertsQuery = useQuery({
+    queryKey: ["quiz-alerts", courseId],
+    queryFn: async () => (await client.get(`/courses/${courseId}/quiz-alerts/`)).data,
+    enabled: !!courseId && isTeacher,
+  });
+
   const peopleQuery = useQuery({
     queryKey: ["course-people", courseId],
     queryFn: async () => (await client.get(`/courses/${courseId}/people/`)).data,
@@ -660,6 +666,19 @@ export default function CoursePage() {
 
   const teacherSelectedQuiz = teacherQuizDetailQuery.data || null;
   const teacherSelectedQuizPublished = teacherSelectedQuiz?.state === "PUBLISHED";
+  const teacherQuizAlerts = teacherQuizAlertsQuery.data || [];
+  const teacherAlertHeadline = (alert) => {
+    if (alert?.alert_type === "POOR_PERFORMANCE") {
+      return `${alert.student_name} is performing poorly across recent quizzes`;
+    }
+    return `${alert.student_name} scored below target`;
+  };
+  const teacherAlertDetail = (alert) => {
+    if (alert?.alert_type === "POOR_PERFORMANCE") {
+      return `Recent live-quiz average ${alert.actual_percent}% is below the ${alert.threshold_percent}% threshold. Latest quiz: ${alert.quiz_title || `Quiz #${alert.quiz}`}.`;
+    }
+    return `${alert.quiz_title || `Quiz #${alert.quiz}`} finished at ${alert.actual_percent}% which is below the ${alert.threshold_percent}% threshold.`;
+  };
 
   const startLabAttempt = useMutation({
     mutationFn: async (quizId) => (await client.post(`/quizzes/${quizId}/attempts/start/`, {})).data,
@@ -1580,6 +1599,38 @@ export default function CoursePage() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {teacherQuizAlerts.length > 0 && (
+                  <div className="quiz-analytics-shell">
+                    <div className="section-header">
+                      <h5>Teacher Alerts</h5>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => teacherQuizAlertsQuery.refetch()}
+                        disabled={teacherQuizAlertsQuery.isFetching}
+                      >
+                        {teacherQuizAlertsQuery.isFetching ? "Refreshing..." : "Refresh Alerts"}
+                      </button>
+                    </div>
+                    <div className="quiz-attempt-list">
+                      {teacherQuizAlerts.slice(0, 8).map((alert) => (
+                        <div key={alert.id} className="quiz-attempt-row">
+                          <div>
+                            <strong>{teacherAlertHeadline(alert)}</strong>
+                            <p className="text-muted text-small">{teacherAlertDetail(alert)}</p>
+                            <p className="text-muted text-small">
+                              {alert.created_at ? new Date(alert.created_at).toLocaleString() : ""}
+                            </p>
+                          </div>
+                          <div className="quiz-attempt-score">
+                            <strong>{alert.actual_percent}%</strong>
+                            <span className="text-muted text-small">{alert.alert_type_label || alert.alert_type}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
 

@@ -30,6 +30,7 @@ class AttemptStatus(models.TextChoices):
 
 class AlertType(models.TextChoices):
     LOW_SCORE = "LOW_SCORE", "Low Score"
+    POOR_PERFORMANCE = "POOR_PERFORMANCE", "Poor Performance"
 
 
 class Quiz(models.Model):
